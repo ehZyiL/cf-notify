@@ -1,0 +1,24 @@
+name = "cf-notify"
+main = "src/index.mjs"
+compatibility_date = "2026-07-24"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+assets = { directory = "public", binding = "ASSETS", not_found_handling = "single-page-application", run_worker_first = ["/api/*", "/wechat/*", "/health", "/healthz"] }
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cf-notify"
+database_id = "REPLACE_AFTER_CREATE"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_AFTER_CREATE"
+
+[vars]
+BIND_CODE_TTL_SEC = "300"
+WECHAT_CODE_LOGIN_ENABLED = "false"
+
+[observability]
+enabled = true

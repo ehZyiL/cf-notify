@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cf-notify · 绑定测试</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 40px auto; padding: 0 16px; }
+    input, button, textarea { font: inherit; width: 100%; margin: 6px 0; padding: 10px; box-sizing: border-box; }
+    .box { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    .code { font-size: 28px; font-weight: 800; letter-spacing: 4px; text-align: center; }
+    .muted { color: #666; font-size: 14px; }
+    .ok { color: #0a7; }
+    .err { color: #c22; }
+  </style>
+</head>
+<body>
+  <h1>cf-notify 绑定测试</h1>
+  <p class="muted">不接业务前端时，用 cf-auth JWT 或测试 token 自测绑定/发送。</p>
+
+  <div class="box">
+    <h2>1. 用户 JWT</h2>
+    <textarea id="jwt" rows="3" placeholder="粘贴 cf-auth session/access JWT，或先点下方生成测试 token（需 ALLOW_TEST_TOKEN）"></textarea>
+    <button id="btn-test-token" type="button">生成测试 Token（仅开发）</button>
+  </div>
+
+  <div class="box">
+    <h2>2. 申请绑定码</h2>
+    <button id="btn-code" type="button">生成微信绑定码</button>
+    <p class="code" id="code">——</p>
+    <p class="muted" id="hint"></p>
+    <p id="status"></p>
+  </div>
+
+  <div class="box">
+    <h2>3. 我的绑定</h2>
+    <button id="btn-list" type="button">刷新绑定列表</button>
+    <pre id="bindings" class="muted"></pre>
+  </div>
+
+  <div class="box">
+    <h2>4. 测试发送（Service Key）</h2>
+    <input id="client-id" placeholder="NOTIFY client_id">
+    <input id="client-secret" placeholder="NOTIFY client_secret" type="password">
+    <input id="user-id" placeholder="目标 user_id（默认解析 JWT sub）">
+    <input id="title" value="测试通知">
+    <input id="body" value="cf-notify 联调消息">
+    <button id="btn-send" type="button">POST /api/v1/send</button>
+    <pre id="send-result" class="muted"></pre>
+  </div>
+
+  <script type="module">
+    const $ = (id) => document.getElementById(id);
+    let pollTimer = null;
+
+    function jwt() {
+      return $("jwt").value.trim();
+    }
+
+    async function api(path, options = {}) {
+      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+      if (jwt() && !headers.Authorization) headers.Authorization = `Bearer ${jwt()}`;
+      const res = await fetch(path, { ...options, headers });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    $("btn-test-token").onclick = async () => {
+      try {
+        const data = await fetch("/api/test/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "tester@example.com" })
+        }).then((r) => r.json());
+        if (!data.token) throw new Error(data.error || "token failed");
+        $("jwt").value = data.token;
+        $("user-id").value = data.userId;
+        $("status").innerHTML = `<span class="ok">测试 token 已填入</span>`;
+      } catch (e) {
+        $("status").innerHTML = `<span class="err">${e.message}</span>`;
+      }
+    };
+
+    $("btn-code").onclick = async () => {
+      try {
+        clearInterval(pollTimer);
+        const data = await api("/api/bindings/code", {
+          method: "POST",
+          body: JSON.stringify({ channel: "wechat_oa" })
+        });
+        $("code").textContent = data.code;
+        $("hint").textContent = data.hint || "";
+        $("status").textContent = "等待用户向公众号发送绑定码…";
+        pollTimer = setInterval(async () => {
+          try {
+            const st = await api(`/api/bindings/status?code=${encodeURIComponent(data.code)}`);
+            $("status").textContent = `状态：${st.status}`;
+            if (st.status === "verified") {
+              clearInterval(pollTimer);
+              $("status").innerHTML = `<span class="ok">绑定成功</span>`;
+              $("btn-list").click();
+            }
+          } catch (e) {
+            $("status").innerHTML = `<span class="err">${e.message}</span>`;
+          }
+        }, 2000);
+      } catch (e) {
+        $("status").innerHTML = `<span class="err">${e.message}</span>`;
+      }
+    };
+
+    $("btn-list").onclick = async () => {
+      try {
+        const data = await api("/api/bindings");
+        $("bindings").textContent = JSON.stringify(data.bindings, null, 2);
+      } catch (e) {
+        $("bindings").textContent = e.message;
+      }
+    };
+
+    $("btn-send").onclick = async () => {
+      try {
+        let userId = $("user-id").value.trim();
+        if (!userId && jwt()) {
+          const payload = JSON.parse(atob(jwt().split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+          userId = payload.sub;
+        }
+        const clientId = $("client-id").value.trim();
+        const secret = $("client-secret").value.trim();
+        const res = await fetch("/api/v1/send", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${clientId}:${secret}`
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            service_id: "test",
+            event: "test",
+            title: $("title").value,
+            body: $("body").value
+          })
+        });
+        const data = await res.json();
+        $("send-result").textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        $("send-result").textContent = e.message;
+      }
+    };
+  </script>
+</body>
+</html>
