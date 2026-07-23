@@ -1,5 +1,8 @@
 import { getVerifiedBinding } from "./bindings.mjs";
 import { sendWechatTemplate } from "./channels/wechat-send.mjs";
+import { sendTelegram } from "./channels/telegram-send.mjs";
+import { isSubscribed } from "./subscriptions.mjs";
+import { getChannelApp, resolveTemplate } from "./templates.mjs";
 
 function nowIso() {
   return new Date().toISOString();
@@ -7,10 +10,6 @@ function nowIso() {
 
 /**
  * Orchestrate notification send for one user.
- * @param {object} env
- * @param {object} input
- * @param {{ clientId: string, serviceId: string }} client
- * @param {{ sendWechat?: Function }} [deps] test doubles
  */
 export async function sendNotification(env, input, client, deps = {}) {
   const userId = String(input.user_id || input.userId || "");
@@ -27,6 +26,25 @@ export async function sendNotification(env, input, client, deps = {}) {
 
   if (!userId) {
     return { ok: false, error: "user_id is required", results: [] };
+  }
+
+  const subscribed = await isSubscribed(env.db, { userId, serviceId, eventType });
+  if (!subscribed) {
+    const logId = await writeLog(env.db, {
+      userId,
+      serviceId,
+      clientId: client.clientId,
+      eventType,
+      channel: channels[0] || "wechat_oa",
+      status: "skipped",
+      error: "not_subscribed",
+      payload: { title, body }
+    });
+    return {
+      ok: true,
+      results: [{ channel: channels[0] || "wechat_oa", status: "skipped", error: "not_subscribed", logId }],
+      summary: "not_subscribed"
+    };
   }
 
   const results = [];
@@ -47,6 +65,41 @@ export async function sendNotification(env, input, client, deps = {}) {
       if (strict && r.status === "skipped" && r.error === "not_bound") {
         return { ok: false, error: "not_bound", results };
       }
+      continue;
+    }
+    if (channel === "telegram") {
+      const binding = await getVerifiedBinding(env.db, userId, "telegram");
+      if (!binding) {
+        const logId = await writeLog(env.db, {
+          userId,
+          serviceId,
+          clientId: client.clientId,
+          eventType,
+          channel: "telegram",
+          status: "skipped",
+          error: "not_bound",
+          payload: { title, body }
+        });
+        results.push({ channel: "telegram", status: "skipped", error: "not_bound", logId });
+        continue;
+      }
+      const sendTg = deps.sendTelegram || sendTelegram;
+      const sent = await sendTg(env, {
+        chatId: binding.externalId,
+        text: [title, body].filter(Boolean).join("\n")
+      });
+      const status = sent.ok ? "sent" : sent.error === "telegram_not_implemented" ? "skipped" : "failed";
+      const logId = await writeLog(env.db, {
+        userId,
+        serviceId,
+        clientId: client.clientId,
+        eventType,
+        channel: "telegram",
+        status,
+        error: sent.ok ? null : sent.error,
+        payload: { title, body }
+      });
+      results.push({ channel: "telegram", status, error: sent.error || null, logId });
       continue;
     }
     results.push({
@@ -91,22 +144,19 @@ async function sendWechatChannel(env, ctx) {
     return { channel: "wechat_oa", status: "skipped", error: "not_bound", logId };
   }
 
-  const templateId =
-    ctx.data?.template_id ||
-    ctx.data?.templateId ||
-    env.WECHAT_DEFAULT_TEMPLATE_ID ||
-    "DEFAULT_TEMPLATE";
-
-  const templateData =
-    ctx.data?.template ||
-    ctx.data?.data ||
-    buildDefaultTemplateData(ctx.title, ctx.body);
+  const app = await getChannelApp(env.db, "wechat_oa");
+  const resolved = resolveTemplate(app?.templateMapJson, ctx.eventType, {
+    title: ctx.title,
+    body: ctx.body,
+    data: ctx.data
+  });
+  const templateId = resolved.templateId || env.WECHAT_DEFAULT_TEMPLATE_ID || "DEFAULT_TEMPLATE";
 
   const sendFn = ctx.sendWechat || sendWechatTemplate;
   const sent = await sendFn(env, {
     openid: binding.externalId,
     templateId,
-    data: templateData,
+    data: resolved.templateData,
     url: ctx.linkUrl
   });
 
@@ -140,13 +190,6 @@ async function sendWechatChannel(env, ctx) {
     status: "sent",
     providerMsgId: sent.providerMsgId,
     logId
-  };
-}
-
-function buildDefaultTemplateData(title, body) {
-  return {
-    thing1: { value: String(title || "通知").slice(0, 20) },
-    thing2: { value: String(body || "-").slice(0, 20) }
   };
 }
 
@@ -198,4 +241,41 @@ export async function listLogs(db, { userId, limit = 50 } = {}) {
     .bind(limit)
     .all();
   return results || [];
+}
+
+/** Retry failed logs once (simple P1.5 skeleton). */
+export async function retryFailedLogs(env, { limit = 20, sendWechat } = {}) {
+  const { results } = await env.db
+    .prepare(
+      `SELECT id, user_id AS userId, service_id AS serviceId, client_id AS clientId,
+              event_type AS eventType, channel, payload_json AS payloadJson
+       FROM notification_logs WHERE status = 'failed' AND channel = 'wechat_oa'
+       ORDER BY created_at ASC LIMIT ?`
+    )
+    .bind(limit)
+    .all();
+  const out = [];
+  for (const row of results || []) {
+    let payload = {};
+    try {
+      payload = JSON.parse(row.payloadJson || "{}");
+    } catch {
+      /* ignore */
+    }
+    const result = await sendNotification(
+      env,
+      {
+        user_id: row.userId,
+        service_id: row.serviceId,
+        event: row.eventType,
+        title: payload.title || "retry",
+        body: payload.body || "",
+        channels: ["wechat_oa"]
+      },
+      { clientId: row.clientId || "retry", serviceId: row.serviceId || "retry" },
+      { sendWechat }
+    );
+    out.push({ logId: row.id, result });
+  }
+  return out;
 }
