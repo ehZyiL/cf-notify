@@ -36,10 +36,19 @@ npm test
 | POST | `/api/admin/channel-apps` | Bootstrap Key |
 | POST | `/api/session/wechat/challenge` | 仅 `WECHAT_CODE_LOGIN_ENABLED` |
 
+## 界面
+
+| 路径 | 说明 |
+|------|------|
+| `/` | **用户通知中心**（绑定微信、订阅、投递记录） |
+| `/admin` | **运营控制台**（凭证、模板映射、日志、重试） |
+
+设计：Indigo 品牌色、侧栏控制台 + 门户双栏，适配桌面/移动。
+
 ## 本地
 
 见下方 env；`npx wrangler dev` + 可选 `node egress/server.mjs`。  
-自测页：`public/index.html`（`ALLOW_TEST_TOKEN=true`）。
+用户页支持 `ALLOW_TEST_TOKEN=true` 生成测试 JWT；管理端使用 `ADMIN_BOOTSTRAP_KEY`。
 
 ```bash
 # .dev.vars 示例

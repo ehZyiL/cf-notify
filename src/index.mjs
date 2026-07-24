@@ -40,7 +40,14 @@ export default {
       return createAppHandler(runtime)(request);
     }
 
-    if (env.ASSETS) return env.ASSETS.fetch(request);
+    if (env.ASSETS) {
+      // Pretty routes for admin console
+      const clean = path.replace(/\/$/, "") || "/";
+      if (clean === "/admin") {
+        return env.ASSETS.fetch(new URL("/admin.html", url).toString());
+      }
+      return env.ASSETS.fetch(request);
+    }
     return new Response("cf-notify is running", {
       headers: { "Content-Type": "text/plain; charset=utf-8" }
     });

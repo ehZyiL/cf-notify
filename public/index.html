@@ -3,151 +3,130 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>cf-notify · 绑定测试</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 40px auto; padding: 0 16px; }
-    input, button, textarea { font: inherit; width: 100%; margin: 6px 0; padding: 10px; box-sizing: border-box; }
-    .box { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 16px 0; }
-    .code { font-size: 28px; font-weight: 800; letter-spacing: 4px; text-align: center; }
-    .muted { color: #666; font-size: 14px; }
-    .ok { color: #0a7; }
-    .err { color: #c22; }
-  </style>
+  <meta name="color-scheme" content="light">
+  <title>通知中心 · cf-notify</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <h1>cf-notify 绑定测试</h1>
-  <p class="muted">不接业务前端时，用 cf-auth JWT 或测试 token 自测绑定/发送。</p>
+  <!-- Gate: paste JWT -->
+  <main id="gate" class="gate">
+    <div class="gate-card">
+      <p class="eyebrow">cf-notify</p>
+      <h1>通知中心</h1>
+      <p class="muted" style="margin-bottom:18px">绑定微信公众号后，可接收业务系统推送的通知。请使用 cf-auth 登录后获取的 JWT，或开发环境测试 Token。</p>
+      <label class="field">
+        <span>用户 JWT</span>
+        <textarea id="jwt-input" placeholder="粘贴 Bearer Token（无需写 Bearer 前缀）"></textarea>
+      </label>
+      <button id="btn-enter" class="btn btn-primary btn-block" type="button">进入通知中心</button>
+      <button id="btn-test-token" class="btn btn-ghost btn-block" type="button" style="margin-top:10px" hidden>开发：生成测试 Token</button>
+      <p class="muted" style="margin:14px 0 0;font-size:12px;text-align:center">管理端请访问 <span class="mono">/admin</span>（不对外展示入口）</p>
+    </div>
+  </main>
 
-  <div class="box">
-    <h2>1. 用户 JWT</h2>
-    <textarea id="jwt" rows="3" placeholder="粘贴 cf-auth session/access JWT，或先点下方生成测试 token（需 ALLOW_TEST_TOKEN）"></textarea>
-    <button id="btn-test-token" type="button">生成测试 Token（仅开发）</button>
+  <!-- Portal -->
+  <div id="portal" class="portal-shell" hidden>
+    <header class="portal-header">
+      <div class="brand-mark">
+        <div class="logo">N</div>
+        <div>
+          <h1>通知中心</h1>
+          <p id="user-label">—</p>
+        </div>
+      </div>
+      <div class="row-actions">
+        <button id="btn-refresh" class="btn btn-ghost btn-sm" type="button">刷新</button>
+        <button id="btn-logout" class="btn btn-ghost btn-sm" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="portal-main">
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <p class="eyebrow">WeChat</p>
+            <h2>公众号通知绑定</h2>
+          </div>
+          <span id="bind-badge" class="badge badge-muted">未绑定</span>
+        </div>
+
+        <div class="hero-status">
+          <strong id="bind-hero-title">尚未绑定微信</strong>
+          <div class="sub" id="bind-hero-sub">绑定后，系统可通过公众号向您推送任务结果与提醒。</div>
+        </div>
+
+        <div id="bound-panel" hidden>
+          <div class="item">
+            <div class="item-row">
+              <p class="item-title">微信 OpenID</p>
+              <span class="badge badge-ok">已验证</span>
+            </div>
+            <div class="item-meta mono" id="bound-openid">—</div>
+            <div class="item-meta" id="bound-time">—</div>
+            <div class="row-actions">
+              <button id="btn-unbind" class="btn btn-danger btn-sm" type="button">解除绑定</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="bind-flow">
+          <ol class="steps">
+            <li>点击下方按钮生成一次性绑定码（5 分钟内有效）。</li>
+            <li>使用微信扫描 / 关注公众号。</li>
+            <li>将绑定码原样发送给公众号，等待本页状态变为「已绑定」。</li>
+          </ol>
+          <div class="bind-code-panel">
+            <div class="muted" style="font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase">绑定码</div>
+            <div class="code" id="bind-code">······</div>
+            <p class="muted" id="bind-hint" style="margin:0">点击生成后显示</p>
+          </div>
+          <div class="row-actions">
+            <button id="btn-gen-code" class="btn btn-primary" type="button">生成绑定码</button>
+            <button id="btn-copy-code" class="btn btn-ghost" type="button" disabled>复制绑定码</button>
+          </div>
+          <p class="muted" id="bind-status" style="margin:14px 0 0;font-size:13px"></p>
+        </div>
+      </section>
+
+      <div style="display:grid;gap:20px">
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <p class="eyebrow">Preferences</p>
+              <h2>事件订阅</h2>
+            </div>
+            <button id="btn-sub-refresh" class="btn btn-ghost btn-sm" type="button">刷新</button>
+          </div>
+          <p class="muted" style="font-size:13px;margin-bottom:14px">未配置订阅时，默认接收全部通知。添加规则后仅接收匹配的事件。</p>
+          <form id="sub-form">
+            <label class="field">
+              <span>服务 ID</span>
+              <input id="sub-service" value="xy-erp" required placeholder="xy-erp 或 *">
+            </label>
+            <label class="field">
+              <span>事件类型</span>
+              <input id="sub-event" value="*" required placeholder="worklog.failed 或 *">
+            </label>
+            <button class="btn btn-secondary btn-block" type="submit">保存订阅</button>
+          </form>
+          <div id="sub-list" class="list" style="margin-top:16px"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <p class="eyebrow">Activity</p>
+              <h2>我的投递记录</h2>
+            </div>
+            <button id="btn-logs-refresh" class="btn btn-ghost btn-sm" type="button">刷新</button>
+          </div>
+          <div id="log-list" class="list"></div>
+        </section>
+      </div>
+    </main>
   </div>
 
-  <div class="box">
-    <h2>2. 申请绑定码</h2>
-    <button id="btn-code" type="button">生成微信绑定码</button>
-    <p class="code" id="code">——</p>
-    <p class="muted" id="hint"></p>
-    <p id="status"></p>
-  </div>
-
-  <div class="box">
-    <h2>3. 我的绑定</h2>
-    <button id="btn-list" type="button">刷新绑定列表</button>
-    <pre id="bindings" class="muted"></pre>
-  </div>
-
-  <div class="box">
-    <h2>4. 测试发送（Service Key）</h2>
-    <input id="client-id" placeholder="NOTIFY client_id">
-    <input id="client-secret" placeholder="NOTIFY client_secret" type="password">
-    <input id="user-id" placeholder="目标 user_id（默认解析 JWT sub）">
-    <input id="title" value="测试通知">
-    <input id="body" value="cf-notify 联调消息">
-    <button id="btn-send" type="button">POST /api/v1/send</button>
-    <pre id="send-result" class="muted"></pre>
-  </div>
-
-  <script type="module">
-    const $ = (id) => document.getElementById(id);
-    let pollTimer = null;
-
-    function jwt() {
-      return $("jwt").value.trim();
-    }
-
-    async function api(path, options = {}) {
-      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-      if (jwt() && !headers.Authorization) headers.Authorization = `Bearer ${jwt()}`;
-      const res = await fetch(path, { ...options, headers });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      return data;
-    }
-
-    $("btn-test-token").onclick = async () => {
-      try {
-        const data = await fetch("/api/test/token", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: "tester@example.com" })
-        }).then((r) => r.json());
-        if (!data.token) throw new Error(data.error || "token failed");
-        $("jwt").value = data.token;
-        $("user-id").value = data.userId;
-        $("status").innerHTML = `<span class="ok">测试 token 已填入</span>`;
-      } catch (e) {
-        $("status").innerHTML = `<span class="err">${e.message}</span>`;
-      }
-    };
-
-    $("btn-code").onclick = async () => {
-      try {
-        clearInterval(pollTimer);
-        const data = await api("/api/bindings/code", {
-          method: "POST",
-          body: JSON.stringify({ channel: "wechat_oa" })
-        });
-        $("code").textContent = data.code;
-        $("hint").textContent = data.hint || "";
-        $("status").textContent = "等待用户向公众号发送绑定码…";
-        pollTimer = setInterval(async () => {
-          try {
-            const st = await api(`/api/bindings/status?code=${encodeURIComponent(data.code)}`);
-            $("status").textContent = `状态：${st.status}`;
-            if (st.status === "verified") {
-              clearInterval(pollTimer);
-              $("status").innerHTML = `<span class="ok">绑定成功</span>`;
-              $("btn-list").click();
-            }
-          } catch (e) {
-            $("status").innerHTML = `<span class="err">${e.message}</span>`;
-          }
-        }, 2000);
-      } catch (e) {
-        $("status").innerHTML = `<span class="err">${e.message}</span>`;
-      }
-    };
-
-    $("btn-list").onclick = async () => {
-      try {
-        const data = await api("/api/bindings");
-        $("bindings").textContent = JSON.stringify(data.bindings, null, 2);
-      } catch (e) {
-        $("bindings").textContent = e.message;
-      }
-    };
-
-    $("btn-send").onclick = async () => {
-      try {
-        let userId = $("user-id").value.trim();
-        if (!userId && jwt()) {
-          const payload = JSON.parse(atob(jwt().split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-          userId = payload.sub;
-        }
-        const clientId = $("client-id").value.trim();
-        const secret = $("client-secret").value.trim();
-        const res = await fetch("/api/v1/send", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${clientId}:${secret}`
-          },
-          body: JSON.stringify({
-            user_id: userId,
-            service_id: "test",
-            event: "test",
-            title: $("title").value,
-            body: $("body").value
-          })
-        });
-        const data = await res.json();
-        $("send-result").textContent = JSON.stringify(data, null, 2);
-      } catch (e) {
-        $("send-result").textContent = e.message;
-      }
-    };
-  </script>
+  <div id="toast" class="toast" hidden></div>
+  <script src="/me.js" type="module"></script>
 </body>
 </html>

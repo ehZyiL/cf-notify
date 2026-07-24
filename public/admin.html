@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>控制台 · cf-notify</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="gate" class="admin-gate">
+    <div class="gate-card">
+      <p class="eyebrow" style="color:#a5b4fc">cf-notify Admin</p>
+      <h1 style="color:#0f172a">运营控制台</h1>
+      <p class="muted" style="margin-bottom:16px">使用部署时配置的 Admin Bootstrap Key 进入。请勿对外公开此页面能力。</p>
+      <label class="field">
+        <span>Bootstrap Key</span>
+        <input id="admin-key" type="password" autocomplete="off" placeholder="X-Admin-Bootstrap-Key">
+      </label>
+      <button id="btn-admin-enter" class="btn btn-primary btn-block" type="button">进入控制台</button>
+    </div>
+  </main>
+
+  <div id="shell" class="admin-shell" hidden>
+    <aside class="sidebar">
+      <div class="logo-row">
+        <div class="logo">N</div>
+        <div>
+          <strong>cf-notify</strong>
+          <span>Notification Ops</span>
+        </div>
+      </div>
+      <nav class="nav" aria-label="管理导航">
+        <button type="button" class="active" data-page="overview">总览</button>
+        <button type="button" data-page="clients">服务凭证</button>
+        <button type="button" data-page="templates">模板映射</button>
+        <button type="button" data-page="logs">投递日志</button>
+      </nav>
+      <div class="sidebar-foot">
+        密钥类配置请使用 <span class="mono">wrangler secret</span>。<br>
+        用户绑定请引导至通知中心首页。
+      </div>
+    </aside>
+
+    <div class="admin-main">
+      <header class="admin-topbar">
+        <div>
+          <p class="eyebrow">Operations</p>
+          <h1 id="page-title">总览</h1>
+        </div>
+        <div class="row-actions">
+          <button id="btn-admin-refresh" class="btn btn-ghost btn-sm" type="button">刷新数据</button>
+          <button id="btn-admin-logout" class="btn btn-ghost btn-sm" type="button">退出</button>
+        </div>
+      </header>
+
+      <div class="admin-content">
+        <section id="page-overview" class="page active">
+          <div class="stat-row">
+            <div class="stat">
+              <div class="label">Service Clients</div>
+              <div class="value" id="stat-clients">—</div>
+            </div>
+            <div class="stat">
+              <div class="label">Recent Logs</div>
+              <div class="value" id="stat-logs">—</div>
+            </div>
+            <div class="stat">
+              <div class="label">Failed (sample)</div>
+              <div class="value" id="stat-failed">—</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Health</p>
+                <h2>服务状态</h2>
+              </div>
+              <span id="health-badge" class="badge badge-muted">检查中</span>
+            </div>
+            <p class="muted" id="health-detail" style="margin:0;font-size:14px">—</p>
+            <div class="row-actions" style="margin-top:16px">
+              <button id="btn-retry" class="btn btn-secondary btn-sm" type="button">重试失败投递</button>
+            </div>
+            <pre id="retry-result" class="muted mono" style="margin:12px 0 0;white-space:pre-wrap;font-size:12px"></pre>
+          </div>
+        </section>
+
+        <section id="page-clients" class="page">
+          <div class="grid-2">
+            <form id="client-form" class="card">
+              <div class="card-head">
+                <div>
+                  <p class="eyebrow">Credentials</p>
+                  <h2>创建服务凭证</h2>
+                </div>
+              </div>
+              <p class="muted" style="font-size:13px;margin-bottom:12px">供 xy-erp 等业务调用 <span class="mono">/api/v1/send</span>。Secret 仅创建时显示一次。</p>
+              <label class="field">
+                <span>Service ID</span>
+                <input id="client-service" required placeholder="xy-erp" pattern="[a-z0-9][a-z0-9_-]*">
+              </label>
+              <label class="field">
+                <span>显示名称</span>
+                <input id="client-name" placeholder="XY ERP Automation">
+              </label>
+              <label class="field">
+                <span>Client ID（可选）</span>
+                <input id="client-id" placeholder="留空自动生成">
+              </label>
+              <button class="btn btn-primary btn-block" type="submit">创建</button>
+              <div id="client-secret-box" class="secret-box" hidden></div>
+            </form>
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <p class="eyebrow">Inventory</p>
+                  <h2>凭证列表</h2>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Client ID</th><th>Service</th><th>Name</th><th>状态</th></tr>
+                  </thead>
+                  <tbody id="clients-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="page-templates" class="page">
+          <div class="grid-2">
+            <form id="tpl-form" class="card">
+              <div class="card-head">
+                <div>
+                  <p class="eyebrow">WeChat</p>
+                  <h2>模板映射</h2>
+                </div>
+              </div>
+              <p class="muted" style="font-size:13px;margin-bottom:12px">按事件类型映射公众号模板 ID 与字段。JSON 示例见右侧。</p>
+              <label class="field">
+                <span>通道</span>
+                <input id="tpl-channel" value="wechat_oa" required>
+              </label>
+              <label class="field">
+                <span>名称</span>
+                <input id="tpl-name" value="主公众号" required>
+              </label>
+              <label class="field">
+                <span>App ID（可选展示）</span>
+                <input id="tpl-appid" placeholder="wx…">
+              </label>
+              <label class="field">
+                <span>template_map JSON</span>
+                <textarea id="tpl-map" rows="12">{
+  "worklog.failed": {
+    "template_id": "YOUR_TEMPLATE_ID",
+    "fields": { "thing1": "title", "thing2": "body" }
+  },
+  "*": {
+    "template_id": "DEFAULT_TEMPLATE_ID",
+    "fields": { "thing1": "title", "thing2": "body" }
+  }
+}</textarea>
+              </label>
+              <button class="btn btn-primary btn-block" type="submit">保存映射</button>
+            </form>
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <p class="eyebrow">Guide</p>
+                  <h2>字段说明</h2>
+                </div>
+              </div>
+              <ul class="muted" style="margin:0;padding-left:18px;line-height:1.7;font-size:14px">
+                <li><span class="mono">template_id</span>：公众号后台申请的模板 ID</li>
+                <li><span class="mono">fields</span>：微信字段名 → <span class="mono">title</span> / <span class="mono">body</span> 或 data 键</li>
+                <li>业务 <span class="mono">send.data.template</span> 可覆盖映射</li>
+                <li>出站仍走固定 IP 网关 <span class="mono">EGRESS_BASE_URL</span></li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section id="page-logs" class="page">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Delivery</p>
+                <h2>投递日志</h2>
+              </div>
+              <div class="row-actions">
+                <input id="logs-user-filter" placeholder="按 userId 筛选" style="padding:8px 12px;border:1px solid var(--line);border-radius:8px;min-width:200px">
+                <button id="btn-logs-load" class="btn btn-secondary btn-sm" type="button">查询</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>用户</th>
+                    <th>服务</th>
+                    <th>事件</th>
+                    <th>通道</th>
+                    <th>状态</th>
+                    <th>错误</th>
+                  </tr>
+                </thead>
+                <tbody id="logs-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/admin.js" type="module"></script>
+</body>
+</html>
