@@ -338,17 +338,35 @@ describe("reliable notification delivery", () => {
     assert.equal(logs[0].status, "sent");
   });
 
-  it("reconciles D1 writes when queue send failed", async () => {
+  it("retries the same idempotency key and can reconcile when queue send failed", async () => {
     const env = makeEnv();
     env.dispatchQueue.error = new Error("queue unavailable");
-    const event = await createEvent(env);
-    assert.equal(event.queued, false);
+    let eventId;
+    await assert.rejects(
+      () => createEvent(env),
+      (error) => {
+        eventId = error.details?.eventId;
+        return error.status === 503 && error.details?.retryable === true;
+      }
+    );
+    assert.ok(eventId);
     assert.equal(env.dispatchQueue.messages.length, 0);
 
     env.dispatchQueue.error = null;
+    const replay = await createEvent(env);
+    assert.equal(replay.eventId, eventId);
+    assert.equal(replay.duplicate, true);
+    assert.equal(replay.queued, true);
+    assert.deepEqual(env.dispatchQueue.messages, [{ eventId }]);
+
+    env.dispatchQueue.messages.length = 0;
+    await env.db
+      .prepare("UPDATE notification_events SET dispatch_queued_at = NULL, updated_at = ? WHERE id = ?")
+      .bind(new Date(0).toISOString(), eventId)
+      .run();
     const result = await reconcileQueues(env, { staleSeconds: -1 });
     assert.equal(result.eventsQueued, 1);
-    assert.deepEqual(env.dispatchQueue.messages, [{ eventId: event.eventId }]);
+    assert.deepEqual(env.dispatchQueue.messages, [{ eventId }]);
   });
 
   it("does not expose another service's event status", async () => {

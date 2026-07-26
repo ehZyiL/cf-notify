@@ -96,6 +96,8 @@ Content-Type: application/json
 
 生产中的 `/api/v1/send` 在 Queue binding 存在时也进入相同异步链路并返回 `202`；未配置 Queue 的本地兼容模式仍执行原同步发送。
 
+当前 Cloudflare 账号的 5 个 Cron Trigger 配额已用满，因此生产配置不新增 Cron。若首次 Queue 入队失败，接口返回带 `eventId` 和 `Retry-After` 的 `503`；调用方使用相同 `Idempotency-Key` 重试会重新入队，不会重复创建事件。`scheduled()` 补偿逻辑仍保留，释放 Cron 配额后可重新启用。
+
 本地验证命令：
 
 ```bash

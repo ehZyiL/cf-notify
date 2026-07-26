@@ -538,7 +538,7 @@ POST /api/v1/notifications
 - Queue body 仅包含 `eventId` 或 `deliveryId`，不包含 `openid` 或业务 payload。
 - Dispatch 和 Delivery 都按消息单独 `ack()` / `retry()`，并分别配置 DLQ。
 - 实际投递前重新检查订阅和 verified binding；解绑、换绑或退订会跳过旧消息。
-- Cron 每分钟补偿 D1 已写入但 Queue 发送失败或长时间未处理的记录。
+- `scheduled()` 可补偿 D1 已写入但 Queue 发送失败或长时间未处理的记录；当前账号 Cron 配额已满，生产未创建新 Trigger。入口入队失败会返回可重试的 `503`，同一幂等键重试会重新入队。
 - `GET /api/v1/notifications/:eventId` 只允许同一 service 查询，并隐藏真实目标和错误全文。
 - 外部供应商仍只能做到至少一次；网络超时导致结果未知时，DLQ 最终状态记为 `unknown`。
 - 绑定挑战只保存 D1 哈希并原子消费；微信 AES 回调校验签名、时间窗和重放收据。

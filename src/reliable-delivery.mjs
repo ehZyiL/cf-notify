@@ -254,7 +254,14 @@ export async function ingestNotificationEvent(env, input, client, idempotencyKey
   }
 
   let queued = Boolean(row.dispatchQueuedAt);
-  if (!duplicate) queued = await enqueueEvent(env, row.id);
+  if (!queued) queued = await enqueueEvent(env, row.id);
+  if (!queued) {
+    throw new HttpError(503, "notification was saved but could not be queued", {
+      eventId: row.id,
+      retryable: true,
+      retryAfterSec: 5
+    });
+  }
   return { eventId: row.id, status: row.status, duplicate, queued };
 }
 

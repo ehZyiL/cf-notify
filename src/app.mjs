@@ -66,7 +66,7 @@ export function createAppHandler(env) {
     } catch (error) {
       if (error instanceof HttpError) {
         const headers = {};
-        if (error.status === 429 && error.details?.retryAfterSec) {
+        if (error.details?.retryAfterSec) {
           headers["Retry-After"] = String(error.details.retryAfterSec);
         }
         return json(

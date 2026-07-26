@@ -9,12 +9,12 @@ assets = { directory = "public", binding = "ASSETS", html_handling = "none", not
 [[d1_databases]]
 binding = "DB"
 database_name = "cf-notify"
-database_id = "00000000-0000-4000-8000-000000000101"
+database_id = "3d58d1a6-d9d3-4d3e-9ed2-8c616585a303"
 migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "000000000000000000000000000000a1"
+id = "579b7fea47fc49879d2834d7d4820d70"
 
 [[services]]
 binding = "CF_AUTH"
@@ -27,6 +27,7 @@ WECHAT_CALLBACK_MAX_SKEW_SEC = "300"
 RECONCILE_AFTER_SEC = "120"
 RECONCILE_BATCH_SIZE = "50"
 CF_AUTH_ISSUER = "https://cf-auth.ehzyil.cc.cd"
+CF_AUTH_JWT_AUDIENCE = "cf-auth-session"
 EGRESS_TIMEOUT_MS = "10000"
 SUBSCRIPTIONS_DEFAULT_OPEN = "false"
 ENFORCE_USER_SERVICE_MEMBERSHIP = "true"
@@ -62,9 +63,6 @@ max_batch_timeout = 5
 queue = "cf-notify-delivery-dlq"
 max_batch_size = 10
 max_batch_timeout = 5
-
-[triggers]
-crons = ["*/1 * * * *"]
 
 [observability]
 enabled = true
