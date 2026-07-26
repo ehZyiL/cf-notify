@@ -170,7 +170,7 @@ async function sendWechatChannel(env, ctx) {
       status: "failed",
       error: sent.error,
       providerMsgId: sent.providerMsgId,
-      payload: { title: ctx.title, body: ctx.body, openid: binding.externalId }
+      payload: { title: ctx.title, body: ctx.body }
     });
     return { channel: "wechat_oa", status: "failed", error: sent.error, logId };
   }
@@ -219,15 +219,24 @@ export async function writeLog(db, item) {
 }
 
 export async function listLogs(db, { userId, limit = 50 } = {}) {
+  const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+  const union = `
+    SELECT id, user_id, service_id, event_type, channel, status, error, created_at
+    FROM notification_logs
+    UNION ALL
+    SELECT d.id, e.user_id, e.service_id, e.event_type, d.channel, d.status,
+           d.error_code AS error, d.created_at
+    FROM notification_deliveries d
+    JOIN notification_events e ON e.id = d.event_id`;
   if (userId) {
     const { results } = await db
       .prepare(
         `SELECT id, user_id AS userId, service_id AS serviceId, event_type AS eventType,
                 channel, status, error, created_at AS createdAt
-         FROM notification_logs WHERE user_id = ?
+         FROM (${union}) WHERE user_id = ?
          ORDER BY created_at DESC LIMIT ?`
       )
-      .bind(userId, limit)
+      .bind(userId, boundedLimit)
       .all();
     return results || [];
   }
@@ -235,10 +244,10 @@ export async function listLogs(db, { userId, limit = 50 } = {}) {
     .prepare(
       `SELECT id, user_id AS userId, service_id AS serviceId, event_type AS eventType,
               channel, status, error, created_at AS createdAt
-       FROM notification_logs
+       FROM (${union})
        ORDER BY created_at DESC LIMIT ?`
     )
-    .bind(limit)
+    .bind(boundedLimit)
     .all();
   return results || [];
 }

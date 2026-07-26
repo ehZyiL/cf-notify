@@ -6,8 +6,6 @@
  * P1.5: encrypt/decrypt used when WECHAT_AES_KEY is set.
  */
 
-import { base64UrlDecode } from "../crypto.mjs";
-
 // Node and Workers both have subtle for AES-CBC
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -89,13 +87,7 @@ export async function wechatDecrypt(encryptBase64, encodingAesKey, appId) {
   const msg = textDecoder.decode(unpadded.subarray(20, 20 + msgLen));
   const gotAppId = textDecoder.decode(unpadded.subarray(20 + msgLen));
   if (appId && gotAppId !== appId) {
-    // Some modes still work; warn soft
-    if (gotAppId && !gotAppId.startsWith(appId.slice(0, 2))) {
-      throw new Error("appId mismatch in encrypted message");
-    }
+    throw new Error("appId mismatch in encrypted message");
   }
   return msg;
 }
-
-// silence unused import path for base64UrlDecode if tree-shaken
-void base64UrlDecode;

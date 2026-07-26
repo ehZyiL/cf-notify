@@ -1,4 +1,9 @@
-import { requireServiceClient, createNotifyClient, listNotifyClients } from "./auth-service.mjs";
+import {
+  requireServiceClient,
+  createNotifyClient,
+  listNotifyClients,
+  revokeNotifyClient
+} from "./auth-service.mjs";
 import { requireUser } from "./auth-user.mjs";
 import {
   createBindCode,
@@ -7,10 +12,14 @@ import {
   revokeBinding
 } from "./bindings.mjs";
 import {
+  claimWechatCallback,
   handleWechatMessage,
+  isFreshWechatTimestamp,
+  parseWechatXml,
+  verifyWechatAesSignature,
   verifyWechatSignature
 } from "./channels/wechat-callback.mjs";
-import { bearerToken, HttpError, json, readJson, requireFields, routeParts } from "./http.mjs";
+import { bearerToken, HttpError, json, readJson, readText, requireFields, routeParts } from "./http.mjs";
 import { assertBindCodeAllowed } from "./rate-limit.mjs";
 import { listLogs, retryFailedLogs, sendNotification } from "./send.mjs";
 import {
@@ -19,7 +28,13 @@ import {
   upsertSubscription
 } from "./subscriptions.mjs";
 import { upsertChannelApp } from "./templates.mjs";
-import { signJwtHs256 } from "./crypto.mjs";
+import { signJwtHs256, timingSafeSecretEqual } from "./crypto.mjs";
+import {
+  getEventStatusForService,
+  ingestNotificationEvent,
+  retryDelivery,
+  retryFailedDeliveries
+} from "./reliable-delivery.mjs";
 
 /**
  * @param {object} env
@@ -59,38 +74,70 @@ export function createAppHandler(env) {
           { status: error.status, headers }
         );
       }
-      console.error(error && error.stack ? error.stack : error);
+      console.error(JSON.stringify({
+        event: "http_request_failed",
+        error: String(error?.message || error).slice(0, 500)
+      }));
       return json(
-        { ok: false, error: error && error.message ? error.message : String(error) },
+        { ok: false, error: "internal server error" },
         { status: 500 }
       );
     }
   };
 }
 
+function publicBinding(binding) {
+  const externalId = String(binding.externalId || "");
+  const maskedLabel = externalId
+    ? `${externalId.slice(0, 2)}***${externalId.slice(-4)}`
+    : null;
+  const { externalId: _externalId, ...safe } = binding;
+  return { ...safe, maskedLabel };
+}
+
+function userHasService(user, serviceId) {
+  const wanted = String(serviceId || "").toLowerCase();
+  return (user.services || []).some((service) => {
+    const id = typeof service === "string" ? service : service?.id || service?.serviceId;
+    return String(id || "").toLowerCase() === wanted;
+  });
+}
+
 async function handleWechatCallback(request, env, url) {
   const token = env.WECHAT_TOKEN || "";
+  if (!token) throw new HttpError(503, "wechat callback is not configured");
+  const timestamp = url.searchParams.get("timestamp") || "";
+  const nonce = url.searchParams.get("nonce") || "";
+  const maxSkewSec = Number(env.WECHAT_CALLBACK_MAX_SKEW_SEC || 300);
+  if (!isFreshWechatTimestamp(timestamp, { maxSkewSec })) {
+    return new Response("stale timestamp", { status: 403 });
+  }
   if (request.method === "GET") {
     const signature = url.searchParams.get("signature") || "";
-    const timestamp = url.searchParams.get("timestamp") || "";
-    const nonce = url.searchParams.get("nonce") || "";
     const echostr = url.searchParams.get("echostr") || "";
     const ok = await verifyWechatSignature(token, { signature, timestamp, nonce });
     if (!ok) return new Response("invalid signature", { status: 403 });
     return new Response(echostr, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
   }
   if (request.method === "POST") {
-    if (token) {
-      const signature = url.searchParams.get("signature") || url.searchParams.get("msg_signature") || "";
-      const timestamp = url.searchParams.get("timestamp") || "";
-      const nonce = url.searchParams.get("nonce") || "";
-      // plaintext signature; secure mode uses msg_signature (token+timestamp+nonce+encrypt) — P1.5 partial
-      if (url.searchParams.get("encrypt_type") !== "aes") {
-        const ok = await verifyWechatSignature(token, { signature, timestamp, nonce });
-        if (!ok) return new Response("invalid signature", { status: 403 });
-      }
+    const xml = await readText(request, { maxBytes: 128 * 1024 });
+    const encrypted = url.searchParams.get("encrypt_type") === "aes";
+    const signature = encrypted
+      ? url.searchParams.get("msg_signature") || ""
+      : url.searchParams.get("signature") || "";
+    const valid = encrypted
+      ? await verifyWechatAesSignature(token, {
+          msgSignature: signature,
+          timestamp,
+          nonce,
+          encrypt: parseWechatXml(xml).Encrypt
+        })
+      : await verifyWechatSignature(token, { signature, timestamp, nonce });
+    if (!valid) return new Response("invalid signature", { status: 403 });
+    const claimed = await claimWechatCallback(env.db, { signature, timestamp, nonce, body: xml });
+    if (!claimed) {
+      return new Response("success", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
-    const xml = await request.text();
     return handleWechatMessage(env, xml);
   }
   throw new HttpError(405, "method not allowed");
@@ -118,7 +165,7 @@ async function handleApi(request, env, parts, url) {
     }
     const input = await readJson(request);
     const result = await createBindCode(
-      env.kv,
+      env.db,
       {
         purpose: "wechat_login",
         channel: "wechat_oa",
@@ -134,12 +181,17 @@ async function handleApi(request, env, parts, url) {
   if (parts[0] === "admin") {
     await requireBootstrapAdmin(env, request);
     if (parts[1] === "clients") {
-      if (request.method === "GET") return json({ clients: await listNotifyClients(env.db) });
-      if (request.method === "POST") {
+      if (!parts[2] && request.method === "GET") return json({ clients: await listNotifyClients(env.db) });
+      if (!parts[2] && request.method === "POST") {
         const input = await readJson(request);
         requireFields(input, ["serviceId"]);
         const client = await createNotifyClient(env.db, input);
         return json({ client });
+      }
+      if (parts[2] && request.method === "DELETE") {
+        const revoked = await revokeNotifyClient(env.db, parts[2]);
+        if (!revoked) throw new HttpError(404, "client not found or already revoked");
+        return json({ ok: true, clientId: parts[2] });
       }
     }
     if (parts[1] === "logs" && request.method === "GET") {
@@ -150,8 +202,20 @@ async function handleApi(request, env, parts, url) {
       return json({ logs });
     }
     if (parts[1] === "retry" && request.method === "POST") {
-      const results = await retryFailedLogs(env, { limit: 20 });
+      const [legacy, reliable] = await Promise.all([
+        retryFailedLogs(env, { limit: 20 }),
+        retryFailedDeliveries(env, { limit: 20 })
+      ]);
+      const results = [
+        ...legacy.map((item) => ({ source: "legacy", ...item })),
+        ...reliable.map((item) => ({ source: "delivery", ...item }))
+      ];
       return json({ results });
+    }
+    if (parts[1] === "deliveries" && parts[2] && parts[3] === "retry" && request.method === "POST") {
+      const queued = await retryDelivery(env, parts[2]);
+      if (!queued) throw new HttpError(404, "delivery not found or queue unavailable");
+      return json({ ok: true, deliveryId: parts[2], queued });
     }
     if (parts[1] === "channel-apps" && request.method === "POST") {
       const input = await readJson(request);
@@ -165,7 +229,8 @@ async function handleApi(request, env, parts, url) {
   if (parts[0] === "bindings") {
     const user = await requireUser(env, request);
     if (!parts[1] && request.method === "GET") {
-      return json({ bindings: await listBindingsForUser(env.db, user.id) });
+      const bindings = await listBindingsForUser(env.db, user.id);
+      return json({ bindings: bindings.map(publicBinding) });
     }
     if (parts[1] === "code" && request.method === "POST") {
       const block = await assertBindCodeAllowed(env.kv, user.id, request);
@@ -174,7 +239,7 @@ async function handleApi(request, env, parts, url) {
       const channel = input.channel || "wechat_oa";
       if (channel !== "wechat_oa") throw new HttpError(400, "only wechat_oa supported in Phase 1");
       const result = await createBindCode(
-        env.kv,
+        env.db,
         { userId: user.id, channel, purpose: "wechat_bind" },
         {
           ttlSec: Number(env.BIND_CODE_TTL_SEC) || 300,
@@ -190,11 +255,11 @@ async function handleApi(request, env, parts, url) {
     if (parts[1] === "status" && request.method === "GET") {
       const code = url.searchParams.get("code") || "";
       if (!code) throw new HttpError(400, "code is required");
-      const status = await getBindCodeStatus(env.kv, code);
+      const status = await getBindCodeStatus(env.db, code, { userId: user.id });
       if (status.status === "expired") {
         const bindings = await listBindingsForUser(env.db, user.id);
         const wechat = bindings.find((b) => b.channel === "wechat_oa" && b.status === "verified");
-        if (wechat) return json({ status: "verified", binding: wechat });
+        if (wechat) return json({ status: "verified", binding: publicBinding(wechat) });
       }
       return json(status);
     }
@@ -215,6 +280,9 @@ async function handleApi(request, env, parts, url) {
     if (!parts[1] && request.method === "POST") {
       const input = await readJson(request);
       requireFields(input, ["serviceId", "eventType"]);
+      if (env.ENFORCE_USER_SERVICE_MEMBERSHIP !== "false" && !userHasService(user, input.serviceId)) {
+        throw new HttpError(403, "user is not assigned to this service");
+      }
       const sub = await upsertSubscription(env.db, {
         userId: user.id,
         serviceId: input.serviceId,
@@ -232,10 +300,43 @@ async function handleApi(request, env, parts, url) {
     throw new HttpError(405, "method not allowed");
   }
 
-  // Service send
+  // Reliable service event API.
+  if (parts[0] === "v1" && parts[1] === "notifications") {
+    const requiredScope = request.method === "GET"
+      ? "notifications.delivery.read"
+      : "notifications.send";
+    const client = await requireServiceClient(env.db, request, { scope: requiredScope });
+    if (!parts[2] && request.method === "POST") {
+      const input = await readJson(request);
+      const result = await ingestNotificationEvent(
+        env,
+        input,
+        client,
+        request.headers.get("Idempotency-Key")
+      );
+      return json(result, { status: 202 });
+    }
+    if (parts[2] && request.method === "GET") {
+      const result = await getEventStatusForService(env.db, parts[2], client.serviceId);
+      if (!result) throw new HttpError(404, "notification event not found");
+      return json(result);
+    }
+    throw new HttpError(405, "method not allowed");
+  }
+
+  // Backwards-compatible send path. Production uses the reliable queue when configured.
   if (parts[0] === "v1" && parts[1] === "send" && request.method === "POST") {
-    const client = await requireServiceClient(env.db, request);
+    const client = await requireServiceClient(env.db, request, { scope: "notifications.send" });
     const input = await readJson(request);
+    if (env.dispatchQueue) {
+      const result = await ingestNotificationEvent(
+        env,
+        input,
+        client,
+        request.headers.get("Idempotency-Key")
+      );
+      return json(result, { status: 202 });
+    }
     const result = await sendNotification(env, input, client);
     return json(result);
   }
@@ -259,5 +360,5 @@ async function requireBootstrapAdmin(env, request) {
   const provided =
     request.headers.get("X-Admin-Bootstrap-Key") ||
     bearerToken(request);
-  if (provided !== key) throw new HttpError(403, "forbidden");
+  if (!(await timingSafeSecretEqual(provided, key))) throw new HttpError(403, "forbidden");
 }

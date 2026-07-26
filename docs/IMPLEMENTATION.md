@@ -63,9 +63,9 @@
 
 | 组件 | 运行位置 | 职责 |
 |------|----------|------|
-| **cf-notify** | Cloudflare Workers + D1 + KV + 自定义域 | 绑定码、回调验签、绑定表、发送编排、日志、service 鉴权 |
+| **cf-notify** | Cloudflare Workers + D1 + KV + Queues | D1 原子绑定挑战、回调验签、异步发送、状态机、service scope 鉴权 |
 | **wechat-egress** | 固定公网 IP 主机（Docker/Node/Go 任选） | `access_token` 缓存、模板/客服消息代理 |
-| **cf-auth** | 已有 | 用户身份；可选 internal 验码（发码登录 P2） |
+| **cf-auth** | 已有 | 用户身份与 RS256 JWT；cf-notify 通过 Service Binding 获取 JWKS |
 | **业务 Worker** | 已有 xy-erp 等 | 触发通知；设置页引导绑定 |
 
 ---
@@ -77,7 +77,10 @@ cf-notify/
 ├── docs/
 │   └── IMPLEMENTATION.md          # 本文
 ├── migrations/
-│   └── 0001_init.sql
+│   ├── 0001_init.sql
+│   ├── 0002_reliable_delivery.sql
+│   ├── 0003_binding_challenges.sql
+│   └── 0004_client_scopes.sql
 ├── public/                        # 可选：简易「绑定状态」页
 ├── src/
 │   ├── index.mjs                  # Worker 入口
@@ -107,7 +110,7 @@ cf-notify/
 
 ## 4. 数据模型
 
-### 4.1 D1 `0001_init.sql`（草案）
+### 4.1 D1 migrations
 
 ```sql
 -- 业务调用方（xy-erp 等）
@@ -184,9 +187,10 @@ CREATE TABLE IF NOT EXISTS channel_apps (
 
 | Key | 值 | TTL |
 |-----|-----|-----|
-| `bindcode:{code}` | `{ purpose, userId?, channel, exp, ... }` | 300s |
 | `rl:*` | 限流计数 | 窗口+ε |
-| `wechat:token`（若 token 缓存在 Worker） | 一般 **缓存在 egress**，Worker 可不存 |
+| `cf-auth:jwks:v1` | cf-auth 公钥集合缓存 | 300s |
+
+绑定挑战存 D1 `binding_challenges`，数据库只保存短码 SHA-256。消费使用带 `consumed_at IS NULL AND expires_at > ?` 的条件更新，避免并发重复消费。
 
 ### 4.3 短码 `purpose`（预留登录）
 
@@ -211,7 +215,7 @@ CREATE TABLE IF NOT EXISTS channel_apps (
 | `DELETE` | `/api/bindings/:id` | 解绑 |
 
 **鉴权：** `Authorization: Bearer <cf-auth JWT>`  
-验签：`CF_AUTH_JWT_SECRET` + 校验 `sub`；可选要求 `services` 含某业务（绑定前已登录 xy-erp 即可放宽）。
+验签：生产使用 `CF_AUTH` Service Binding 拉取 RS256 JWKS，并校验 `exp`、`iss`、可选 `aud` 和 `sub`。HS256 只保留给本地兼容测试。创建订阅时必须确认 JWT `services` 包含目标业务。
 
 ### 5.2 业务侧（Service Key）
 
@@ -220,7 +224,7 @@ CREATE TABLE IF NOT EXISTS channel_apps (
 | `POST` | `/api/v1/send` | 发送通知 |
 | `POST` | `/api/v1/send/batch` | P2 |
 
-**鉴权：** `Authorization: Bearer <notify_client_secret>` 或 `X-Notify-Client-Id` + `X-Notify-Client-Secret`  
+**鉴权：** `Authorization: Bearer <clientId>:<clientSecret>`；也可将 client ID 放在 `X-Notify-Client-Id`，Bearer 中只放 secret。
 （secret 仅哈希存 D1，与 cf-auth client 类似。）
 
 **Body：**
@@ -234,9 +238,11 @@ CREATE TABLE IF NOT EXISTS channel_apps (
   "body": "计划 xxx 执行失败：...",
   "url": "https://xy-erp.../",
   "channels": ["wechat_oa"],
-  "data": { "template": { "keyword1": "...", "keyword2": "..." } }
+  "data": { "orderNo": "SO-001", "result": "failed" }
 }
 ```
+
+收件目标和供应商模板由 cf-notify 的绑定、订阅及 `channel_apps` 配置解析；请求中的 `openid`、`chat_id`、`template`、`template_id` 等字段会被拒绝。
 
 **响应：**
 
@@ -278,16 +284,14 @@ CREATE TABLE IF NOT EXISTS channel_apps (
 2. xy-erp 前端或 BFF:
    POST {NOTIFY}/api/bindings/code
    Authorization: 用户身份（或 xy-erp 用 service key + 确认 session 后代调）
-3. notify 生成 6 位数字/字母 code（排除易混字符）
-   KV: bindcode:{code} = { purpose:"wechat_bind", userId, channel:"wechat_oa", exp }
-   TTL 300s
+3. notify 生成 8 位数字/字母 code（约 40 bit，排除易混字符），D1 只保存哈希和 300s 过期时间
 4. UI 展示公众号二维码 + 「请发送：{code}」
 5. 轮询 GET .../status?code= 每 2s，最多 5min
 6. 用户发送文本
 7. 回调：
    - 验签
    - 若 Content 匹配 code
-   - 读码 → userId
+   - 条件 UPDATE 原子消费挑战 → userId
    - UPSERT channel_bindings
    - 若 openid 已绑其他 user → 回复失败文案，不覆盖（或策略：强制换绑需解绑）
    - 被动回复「绑定成功」
@@ -302,18 +306,15 @@ CREATE TABLE IF NOT EXISTS channel_apps (
 
 ```
 xy-erp scheduler 失败
-  → POST notify /api/v1/send
-       client_id/secret, user_id=owner_user_id, event=worklog.failed, body=...
+  → POST notify /api/v1/notifications + Idempotency-Key
 
 notify:
-  1. 验 service client
-  2. 查 channel_bindings WHERE user_id AND channel=wechat_oa AND status=verified
-  3. 查 channel_apps.template_map_json[event] → template_id + 字段映射
-  4. POST {EGRESS_BASE}/wechat/template/send
-       headers: X-Egress-Key
-       body: { openid, template_id, data, url, app_id? }
-  5. 写 notification_logs
-  6. 返回 results
+  1. 验 service client、scope、有效期和 serviceId 一致性
+  2. D1 幂等写 notification_events，投递 Dispatch Queue
+  3. consumer 重新解析订阅/绑定，幂等创建 notification_deliveries
+  4. Delivery Queue consumer 再次检查订阅/绑定并取得模板
+  5. POST {EGRESS_BASE}/wechat/template/send
+  6. 更新 delivery/event 状态；429、网络错误和 5xx 按消息重试，耗尽后进入 DLQ
 ```
 
 ### 7.1 出站网关 `egress/` 接口
@@ -344,8 +345,9 @@ notify:
 
 | 变量 | 说明 |
 |------|------|
-| `CF_AUTH_JWT_SECRET` | 验用户 JWT（与 cf-auth 相同） |
-| `CF_AUTH_URL` | 可选，introspection |
+| `CF_AUTH` | 指向 `cf-auth` 的 Service Binding，用于 RS256 JWKS |
+| `CF_AUTH_ISSUER` | 必须匹配 JWT `iss` |
+| `CF_AUTH_JWT_SECRET` | 仅 HS256 本地兼容/测试 Token |
 | `WECHAT_TOKEN` | 公众号服务器 Token |
 | `WECHAT_AES_KEY` | 安全模式 |
 | `WECHAT_APP_ID` | 回调/配置 |
@@ -354,6 +356,10 @@ notify:
 | `EGRESS_SHARED_SECRET` | 调网关 |
 | `WECHAT_CODE_LOGIN_ENABLED` | 默认 `false`（备选登录） |
 | `BIND_CODE_TTL_SEC` | 默认 300 |
+| `SUBSCRIPTIONS_DEFAULT_OPEN` | 生产默认 `false` |
+| `ENFORCE_USER_SERVICE_MEMBERSHIP` | 生产默认 `true` |
+| `WECHAT_CALLBACK_MAX_SKEW_SEC` | 回调时间窗，默认 300 |
+| `EGRESS_TIMEOUT_MS` | egress 超时，默认 10000 |
 
 D1 / KV 绑定：`DB`、`KV`。
 
@@ -383,6 +389,7 @@ D1 / KV 绑定：`DB`、`KV`。
 - **P1 不改登录**；用户体系不变。  
 - 文档已预留发码登录：`cf-auth/docs/wechat-notify-and-alt-login.md`。  
 - P2：`WECHAT_CODE_LOGIN_ENABLED` + internal `verify-code` API。
+- 当前 `cf-auth` 尚未实现 `NotificationDirectory` RPC；cf-notify 创建订阅时校验 JWT 内的 `services` 快照，投递时要求显式订阅。若需要即时反映成员关系变更，后续应先在 cf-auth 增加权威查询 RPC，再通过现有 Service Binding 接入。
 
 ### 9.2 xy-erp
 
@@ -484,7 +491,7 @@ D1 / KV 绑定：`DB`、`KV`。
 | 出站网关单点 | 健康检查 + 备用机；发送失败入 logs 可重试 |
 | 用户取消关注 | 收 unsubscribe 事件 → binding revoked |
 | 码被爆破 | 长度+TTL+限速+失败锁定 |
-| Workers 调 egress 超时 | 超时 10s；异步发 P2 |
+| Workers 调 egress 超时 | Delivery Queue 指数退避；耗尽后 DLQ 标记 unknown/failed |
 
 ---
 
@@ -493,27 +500,53 @@ D1 / KV 绑定：`DB`、`KV`。
 | # | 问题 | 建议默认 |
 |---|------|----------|
 | 1 | openid 已绑其他账号时？ | 拒绝覆盖，提示先解绑 |
-| 2 | 绑定是否必须已绑 xy-erp？ | P1 不强制（JWT 有效即可） |
-| 3 | 未订阅是否默认全开？ | 是，P1.5 再做细开关 |
+| 2 | 订阅是否必须已绑业务？ | 是，校验 JWT `services` |
+| 3 | 未订阅是否默认全开？ | 生产关闭；本地可显式开启兼容模式 |
 | 4 | 模板字段从哪来？ | `channel_apps.template_map_json` + send.data |
 | 5 | 发码登录自动注册？ | **否**，仅已有用户 |
 
 ---
 
-## 17. 下一步实现顺序（编码）
+## 17. 部署前执行顺序
 
 ```
-1. package.json + wrangler.toml + migrations/0001_init.sql
-2. src/index.mjs + health
-3. bindings 码 + KV + status API
-4. wechat callback（明文）
-5. egress 最小服务 + wechat-send adapter
-6. /api/v1/send + service auth
-7. 简易 public 绑定页或 xy-erp 设置入口
-8. README 部署
+1. 创建 D1、KV、Dispatch/Delivery Queue 和两个 DLQ，替换 wrangler 中实际资源 ID
+2. 确认同账号已部署名为 `cf-auth` 的 Worker，并保持 `CF_AUTH_ISSUER` 一致
+3. 应用 0001-0004 D1 migrations
+4. 通过 Worker Secrets 配置微信、egress、admin 与本地兼容密钥
+5. 运行 tests、types check、startup check 和 deploy dry-run
+6. 部署固定 IP egress，再部署 cf-notify
+7. 真机完成关注、绑定、模板发送、429/5xx/DLQ 故障演练
 ```
 
 ---
 
-**文档版本：** 2026-07-24  
-**状态：** 方案定稿，待 Phase 1 编码
+## 18. 可靠投递实现（2026-07-27）
+
+当前实现已经从请求内同步发送升级为以下链路：
+
+```text
+POST /api/v1/notifications
+  -> D1 notification_events（service_id + Idempotency-Key 唯一）
+  -> cf-notify-dispatch
+  -> D1 notification_deliveries（event + channel + target_key 唯一）
+  -> cf-notify-delivery
+  -> channel adapter -> provider/egress
+```
+
+- HTTP 成功受理返回 `202 Accepted`；幂等重放返回相同 `eventId`。
+- Queue body 仅包含 `eventId` 或 `deliveryId`，不包含 `openid` 或业务 payload。
+- Dispatch 和 Delivery 都按消息单独 `ack()` / `retry()`，并分别配置 DLQ。
+- 实际投递前重新检查订阅和 verified binding；解绑、换绑或退订会跳过旧消息。
+- Cron 每分钟补偿 D1 已写入但 Queue 发送失败或长时间未处理的记录。
+- `GET /api/v1/notifications/:eventId` 只允许同一 service 查询，并隐藏真实目标和错误全文。
+- 外部供应商仍只能做到至少一次；网络超时导致结果未知时，DLQ 最终状态记为 `unknown`。
+- 绑定挑战只保存 D1 哈希并原子消费；微信 AES 回调校验签名、时间窗和重放收据。
+- service credential 支持发送/查询 scope、到期和撤销；用户 JWT 支持 cf-auth RS256/JWKS。
+
+`/api/v1/send` 保留兼容：部署环境有 Queue binding 时进入可靠异步链路；无 Queue binding 的本地旧测试环境继续同步发送。
+
+本地 PostgreSQL 不作为默认存储。Worker 无法直接访问局域网 PostgreSQL；备选方案必须使用 Hyperdrive + 可达 TLS 数据库，或通过 Tunnel + Access 暴露受限存储 API，严禁公网开放 `5432`。仅为微信 IP 白名单时继续使用固定 IP egress，无需更换 D1。
+
+**文档版本：** 2026-07-27
+**状态：** Phase 1/2 基础能力与可靠投递已实现，待真实 Cloudflare/微信环境验收

@@ -1,4 +1,4 @@
-import { sha1Hex, timingSafeEqual } from "../crypto.mjs";
+import { sha1Hex, sha256Hex, timingSafeEqual } from "../crypto.mjs";
 import { consumeBindCode } from "../bindings.mjs";
 import { assertOpenidCodeAttemptAllowed } from "../rate-limit.mjs";
 import { wechatDecrypt, wechatEncrypt } from "./wechat-crypto.mjs";
@@ -11,6 +11,37 @@ export async function verifyWechatSignature(token, { signature, timestamp, nonce
   const arr = [String(token), String(timestamp), String(nonce)].sort();
   const digest = await sha1Hex(arr.join(""));
   return timingSafeEqual(digest, String(signature).toLowerCase());
+}
+
+export async function verifyWechatAesSignature(
+  token,
+  { msgSignature, timestamp, nonce, encrypt }
+) {
+  if (!token || !msgSignature || !timestamp || !nonce || !encrypt) return false;
+  const digest = await sha1Hex(
+    [String(token), String(timestamp), String(nonce), String(encrypt)].sort().join("")
+  );
+  return timingSafeEqual(digest, String(msgSignature).toLowerCase());
+}
+
+export function isFreshWechatTimestamp(timestamp, options = {}) {
+  const seconds = Number(timestamp);
+  if (!Number.isFinite(seconds)) return false;
+  const nowMs = options.now ?? Date.now();
+  const maxSkewSec = options.maxSkewSec ?? 300;
+  return Math.abs(nowMs - seconds * 1000) <= maxSkewSec * 1000;
+}
+
+export async function claimWechatCallback(db, { signature, timestamp, nonce, body }) {
+  const receiptHash = await sha256Hex(`${signature}\n${timestamp}\n${nonce}\n${body}`);
+  const result = await db
+    .prepare(
+      `INSERT OR IGNORE INTO wechat_callback_receipts (receipt_hash, received_at)
+       VALUES (?, ?)`
+    )
+    .bind(receiptHash, Date.now())
+    .run();
+  return Number(result?.meta?.changes || 0) === 1;
 }
 
 export function parseWechatXml(xml) {
@@ -80,8 +111,11 @@ export async function handleWechatMessage(env, xmlBody) {
       try {
         const encrypt = await wechatEncrypt(plainXml, env.WECHAT_AES_KEY, env.WECHAT_APP_ID);
         const now = Math.floor(Date.now() / 1000);
-        const packed = `<xml><Encrypt><![CDATA[${encrypt}]]></Encrypt><MsgSignature><![CDATA[]]></MsgSignature><TimeStamp>${now}</TimeStamp><Nonce><![CDATA[stub]]></Nonce></xml>`;
-        // Note: full msg_signature for encrypted reply needs token+timestamp+nonce+encrypt sha1 — simplified for P1.5 tests of decrypt path
+        const nonce = crypto.randomUUID().replaceAll("-", "");
+        const msgSignature = await sha1Hex(
+          [String(env.WECHAT_TOKEN || ""), String(now), nonce, encrypt].sort().join("")
+        );
+        const packed = `<xml><Encrypt><![CDATA[${encrypt}]]></Encrypt><MsgSignature><![CDATA[${msgSignature}]]></MsgSignature><TimeStamp>${now}</TimeStamp><Nonce><![CDATA[${nonce}]]></Nonce></xml>`;
         return new Response(packed, { headers: { "Content-Type": "application/xml; charset=utf-8" } });
       } catch {
         return plain;
@@ -115,7 +149,7 @@ export async function handleWechatMessage(env, xmlBody) {
     return reply("尝试次数过多，请稍后再试。");
   }
 
-  const result = await consumeBindCode(env.kv, env.db, {
+  const result = await consumeBindCode(env.db, env.db, {
     code: content,
     openid,
     channel: "wechat_oa"

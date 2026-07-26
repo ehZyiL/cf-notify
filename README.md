@@ -7,6 +7,7 @@ Cloudflare Workers 统一通知服务。
 | Phase 1 绑定 + send + egress | ✅ |
 | Phase 1.5 订阅 / 限流 / AES 加解密 / 模板映射 / 退订吊销 | ✅ |
 | Phase 2 管理日志·重试·channel-apps·TG stub·发码登录骨架 | ✅（登录默认关） |
+| Reliable delivery：幂等事件、Dispatch/Delivery Queue、DLQ、Cron 补偿 | ✅ |
 | 真机部署 / xy-erp 接入 | ⬜ |
 
 用户身份 = **cf-auth** `sub`。微信出站经 **固定 IP egress**。
@@ -15,7 +16,7 @@ Cloudflare Workers 统一通知服务。
 
 ```bash
 npm test
-# 27 passed
+# 51 passed
 ```
 
 ## 主要 API
@@ -27,10 +28,13 @@ npm test
 | GET | `/api/bindings/status?code=` | 用户 JWT |
 | GET/DELETE | `/api/bindings` `.../:id` | 用户 JWT |
 | GET/POST/DELETE | `/api/subscriptions` | 用户 JWT |
-| POST | `/api/v1/send` | Service `Bearer id:secret` |
+| POST | `/api/v1/send` | Service `notifications.send` + `Idempotency-Key` |
+| POST | `/api/v1/notifications` | Service `notifications.send` + `Idempotency-Key` |
+| GET | `/api/v1/notifications/:eventId` | 同一 Service + `notifications.delivery.read` |
 | GET | `/api/logs` | 用户 JWT |
 | GET/POST | `/wechat/callback` | 微信签名 |
 | POST | `/api/admin/clients` | Bootstrap Key |
+| DELETE | `/api/admin/clients/:clientId` | Bootstrap Key |
 | GET | `/api/admin/logs` | Bootstrap Key |
 | POST | `/api/admin/retry` | Bootstrap Key |
 | POST | `/api/admin/channel-apps` | Bootstrap Key |
@@ -47,12 +51,12 @@ npm test
 
 ## 本地
 
-见下方 env；`npx wrangler dev` + 可选 `node egress/server.mjs`。  
+先执行 `npm install`，再运行 `npm run dev`；可选启动 `node egress/server.mjs`。
 用户页支持 `ALLOW_TEST_TOKEN=true` 生成测试 JWT；管理端使用 `ADMIN_BOOTSTRAP_KEY`。
 
 ```bash
 # .dev.vars 示例
-CF_AUTH_JWT_SECRET=...
+CF_AUTH_JWT_SECRET=...          # 仅 HS256 本地兼容/测试 Token
 WECHAT_TOKEN=...
 WECHAT_AES_KEY=                # 可选，安全模式 43 字符
 WECHAT_APP_ID=
@@ -62,6 +66,50 @@ ADMIN_BOOTSTRAP_KEY=dev-admin
 ALLOW_TEST_TOKEN=true
 WECHAT_CODE_LOGIN_ENABLED=false
 ```
+
+生产用户 JWT 使用 `CF_AUTH` Service Binding 获取 cf-auth RS256 JWKS，不共享私钥或 HMAC secret。`CF_AUTH_ISSUER`、Service Binding、Queue 和 D1/KV binding 在 `wrangler.toml` 中声明。
+
+生产配置默认 `SUBSCRIPTIONS_DEFAULT_OPEN=false`：用户必须先为对应 service/event 建立订阅，业务才能投递。用户创建订阅时还会校验 cf-auth JWT 中的 `services`。
+
+当前成员校验使用 JWT 的 `services` 快照；`cf-auth` 尚未提供 `NotificationDirectory` RPC，因此还不能在每次投递时动态查询权威成员关系。现阶段通过显式订阅和默认关闭策略控制投递，后续可沿现有 `CF_AUTH` Service Binding 补上该 RPC。
+
+可靠投递使用四个 Queue。首次部署前创建并应用新增迁移：
+
+```bash
+npx wrangler queues create cf-notify-dispatch
+npx wrangler queues create cf-notify-delivery
+npx wrangler queues create cf-notify-dispatch-dlq
+npx wrangler queues create cf-notify-delivery-dlq
+npx wrangler d1 migrations apply cf-notify --remote
+```
+
+业务提交示例：
+
+```http
+POST /api/v1/notifications
+Authorization: Bearer <clientId>:<clientSecret>
+Idempotency-Key: xy-erp:order:20260727-001:approved
+Content-Type: application/json
+
+{"userId":"usr_123","type":"order.approved","data":{"orderNo":"SO-001"}}
+```
+
+生产中的 `/api/v1/send` 在 Queue binding 存在时也进入相同异步链路并返回 `202`；未配置 Queue 的本地兼容模式仍执行原同步发送。
+
+本地验证命令：
+
+```bash
+npm test
+npm run check:types
+npm run check:startup
+npx wrangler deploy --dry-run
+```
+
+## 本地 PostgreSQL 备选
+
+Cloudflare Worker 不能直接访问家庭/局域网地址。需要 PostgreSQL 时，应通过 Hyperdrive 接入可达且启用 TLS 的数据库，优先配合 Workers VPC；不可用时再考虑 Tunnel + Access 后面的窄接口。不要把本地 `5432` 暴露到公网。
+
+本项目默认仍使用 D1。若只是微信等渠道要求固定来源 IP，只部署 `egress/` 固定 IP 网关即可，无需迁移数据库。本地 PostgreSQL 仅作为 D1 用量或历史容量确实成为瓶颈后的备选。
 
 ## 文档
 

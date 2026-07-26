@@ -87,7 +87,7 @@ function renderBindings() {
     $("bind-hero-sub").textContent = "系统可通过公众号向您推送任务结果与重要提醒。";
     $("bound-panel").hidden = false;
     $("bind-flow").hidden = true;
-    $("bound-openid").textContent = wechat.externalId || "—";
+    $("bound-openid").textContent = wechat.maskedLabel || "已验证";
     $("bound-time").textContent = wechat.verifiedAt
       ? `绑定时间 ${new Date(wechat.verifiedAt).toLocaleString("zh-CN")}`
       : "";
@@ -104,7 +104,7 @@ function renderBindings() {
 function renderSubs() {
   const list = $("sub-list");
   if (!state.subscriptions.length) {
-    list.innerHTML = `<div class="empty">暂无自定义订阅，将接收全部通知。</div>`;
+    list.innerHTML = `<div class="empty">暂无订阅，当前不会接收业务通知。</div>`;
     return;
   }
   list.innerHTML = state.subscriptions

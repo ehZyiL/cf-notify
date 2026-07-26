@@ -6,7 +6,13 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "types": "wrangler types worker-configuration.d.ts --include-runtime=false",
+    "check:types": "wrangler types --check worker-configuration.d.ts --include-runtime=false",
+    "check:startup": "wrangler check startup"
+  },
+  "devDependencies": {
+    "wrangler": "^4.114.0"
   },
   "engines": {
     "node": ">=20"

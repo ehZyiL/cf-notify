@@ -1,24 +1,71 @@
 name = "cf-notify"
 main = "src/index.mjs"
-compatibility_date = "2026-07-24"
+compatibility_date = "2026-07-26"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
-assets = { directory = "public", binding = "ASSETS", not_found_handling = "single-page-application", run_worker_first = ["/api/*", "/wechat/*", "/health", "/healthz"] }
+assets = { directory = "public", binding = "ASSETS", html_handling = "none", not_found_handling = "single-page-application", run_worker_first = true }
 
 [[d1_databases]]
 binding = "DB"
 database_name = "cf-notify"
-database_id = "REPLACE_AFTER_CREATE"
+database_id = "00000000-0000-4000-8000-000000000101"
 migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "REPLACE_AFTER_CREATE"
+id = "000000000000000000000000000000a1"
+
+[[services]]
+binding = "CF_AUTH"
+service = "cf-auth"
 
 [vars]
 BIND_CODE_TTL_SEC = "300"
 WECHAT_CODE_LOGIN_ENABLED = "false"
+WECHAT_CALLBACK_MAX_SKEW_SEC = "300"
+RECONCILE_AFTER_SEC = "120"
+RECONCILE_BATCH_SIZE = "50"
+CF_AUTH_ISSUER = "https://cf-auth.ehzyil.cc.cd"
+EGRESS_TIMEOUT_MS = "10000"
+SUBSCRIPTIONS_DEFAULT_OPEN = "false"
+ENFORCE_USER_SERVICE_MEMBERSHIP = "true"
+
+[[queues.producers]]
+binding = "NOTIFY_DISPATCH_QUEUE"
+queue = "cf-notify-dispatch"
+
+[[queues.producers]]
+binding = "NOTIFY_DELIVERY_QUEUE"
+queue = "cf-notify-delivery"
+
+[[queues.consumers]]
+queue = "cf-notify-dispatch"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+dead_letter_queue = "cf-notify-dispatch-dlq"
+
+[[queues.consumers]]
+queue = "cf-notify-delivery"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 8
+dead_letter_queue = "cf-notify-delivery-dlq"
+
+[[queues.consumers]]
+queue = "cf-notify-dispatch-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[queues.consumers]]
+queue = "cf-notify-delivery-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[triggers]
+crons = ["*/1 * * * *"]
 
 [observability]
 enabled = true
+head_sampling_rate = 1

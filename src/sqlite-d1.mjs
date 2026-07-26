@@ -1,16 +1,28 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_MIGRATION = join(__dirname, "..", "migrations", "0001_init.sql");
+const DEFAULT_MIGRATIONS_DIR = join(__dirname, "..", "migrations");
+
+function readMigrations(directory) {
+  return readdirSync(directory)
+    .filter((name) => name.endsWith(".sql"))
+    .sort()
+    .map((name) => readFileSync(join(directory, name), "utf8"))
+    .join("\n");
+}
 
 export function createSqliteD1(options = {}) {
   const filename = options.filename ?? ":memory:";
   const migrationSql =
     options.schemaSql ??
-    (options.skipMigrate ? "" : readFileSync(options.migrationPath || DEFAULT_MIGRATION, "utf8"));
+    (options.skipMigrate
+      ? ""
+      : options.migrationPath
+        ? readFileSync(options.migrationPath, "utf8")
+        : readMigrations(options.migrationsDir || DEFAULT_MIGRATIONS_DIR));
 
   const database = new DatabaseSync(filename);
   if (migrationSql) database.exec(migrationSql);

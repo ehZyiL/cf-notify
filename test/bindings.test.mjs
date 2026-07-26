@@ -9,6 +9,7 @@ import {
   listBindingsForUser,
   upsertBinding
 } from "../src/bindings.mjs";
+import { sha256Hex } from "../src/crypto.mjs";
 
 describe("S2 bind codes + S3 bindings", () => {
   it("creates a code, pending then verified after consume", async () => {
@@ -68,5 +69,32 @@ describe("S2 bind codes + S3 bindings", () => {
     const kv = createMemoryKv();
     const st = await getBindCodeStatus(kv, "NOPE12");
     assert.equal(st.status, "expired");
+  });
+
+  it("stores only a D1 hash and atomically consumes a binding challenge", async () => {
+    const db = createMemoryDb();
+    const created = await createBindCode(db, {
+      userId: "user-d1",
+      channel: "wechat_oa"
+    });
+    const row = await db
+      .prepare("SELECT token_hash AS tokenHash, consumed_at AS consumedAt FROM binding_challenges")
+      .first();
+    assert.equal(row.tokenHash, await sha256Hex(created.code));
+    assert.equal(row.tokenHash.includes(created.code), false);
+    assert.equal(row.consumedAt, null);
+
+    const [first, second] = await Promise.all([
+      consumeBindCode(db, db, { code: created.code, openid: "openid-d1" }),
+      consumeBindCode(db, db, { code: created.code, openid: "openid-d1" })
+    ]);
+    assert.equal([first, second].filter((result) => result.ok && !result.replay).length, 1);
+    assert.equal(
+      [first, second].filter((result) => result.replay || result.error === "already_consumed").length,
+      1
+    );
+
+    const status = await getBindCodeStatus(db, created.code, { userId: "user-d1" });
+    assert.equal(status.status, "verified");
   });
 });

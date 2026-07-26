@@ -108,6 +108,15 @@
                 <span>Client ID（可选）</span>
                 <input id="client-id" placeholder="留空自动生成">
               </label>
+              <fieldset class="field">
+                <legend>权限</legend>
+                <label><input id="client-scope-send" type="checkbox" checked> 发送通知</label>
+                <label><input id="client-scope-read" type="checkbox" checked> 查询投递状态</label>
+              </fieldset>
+              <label class="field">
+                <span>到期时间（可选）</span>
+                <input id="client-expires" type="datetime-local">
+              </label>
               <button class="btn btn-primary btn-block" type="submit">创建</button>
               <div id="client-secret-box" class="secret-box" hidden></div>
             </form>
@@ -121,7 +130,7 @@
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Client ID</th><th>Service</th><th>Name</th><th>状态</th></tr>
+                    <tr><th>Client ID</th><th>Service</th><th>Name</th><th>权限</th><th>到期</th><th>状态</th><th>操作</th></tr>
                   </thead>
                   <tbody id="clients-tbody"></tbody>
                 </table>
@@ -177,7 +186,7 @@
               <ul class="muted" style="margin:0;padding-left:18px;line-height:1.7;font-size:14px">
                 <li><span class="mono">template_id</span>：公众号后台申请的模板 ID</li>
                 <li><span class="mono">fields</span>：微信字段名 → <span class="mono">title</span> / <span class="mono">body</span> 或 data 键</li>
-                <li>业务 <span class="mono">send.data.template</span> 可覆盖映射</li>
+                <li>业务只提交事件数据，不能覆盖 provider template ID</li>
                 <li>出站仍走固定 IP 网关 <span class="mono">EGRESS_BASE_URL</span></li>
               </ul>
             </div>

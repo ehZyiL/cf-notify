@@ -25,6 +25,14 @@ export function timingSafeEqual(a, b) {
   return diff === 0;
 }
 
+export async function timingSafeSecretEqual(a, b) {
+  const [left, right] = await Promise.all([
+    crypto.subtle.digest("SHA-256", textEncoder.encode(String(a || ""))),
+    crypto.subtle.digest("SHA-256", textEncoder.encode(String(b || "")))
+  ]);
+  return timingSafeEqual(base64UrlEncode(left), base64UrlEncode(right));
+}
+
 export function randomToken(bytes = 32) {
   const buf = crypto.getRandomValues(new Uint8Array(bytes));
   return base64UrlEncode(buf);
@@ -79,10 +87,29 @@ export async function verifySecret(secret, encoded) {
   }
 }
 
+export async function hashServiceSecret(secret) {
+  return `sha256.v1.${await sha256Hex(secret)}`;
+}
+
+export async function verifyServiceSecret(secret, encoded) {
+  const value = String(encoded || "");
+  if (value.startsWith("sha256.v1.")) {
+    return timingSafeEqual(value.slice("sha256.v1.".length), await sha256Hex(secret));
+  }
+  return verifySecret(secret, value);
+}
+
 export async function verifyJwtHs256(token, secret, options = {}) {
   const parts = String(token || "").split(".");
   if (parts.length !== 3) throw new Error("invalid token format");
   const [h, p, s] = parts;
+  let header;
+  try {
+    header = JSON.parse(new TextDecoder().decode(base64UrlDecode(h)));
+  } catch {
+    throw new Error("invalid token header");
+  }
+  if (header.alg !== "HS256") throw new Error("invalid token algorithm");
   const body = `${h}.${p}`;
   const key = await crypto.subtle.importKey(
     "raw",
@@ -100,11 +127,72 @@ export async function verifyJwtHs256(token, secret, options = {}) {
   } catch {
     throw new Error("invalid token payload");
   }
+  validateJwtClaims(payload, options);
+  return payload;
+}
+
+export function decodeJwtHeader(token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) throw new Error("invalid token format");
+  try {
+    return JSON.parse(new TextDecoder().decode(base64UrlDecode(parts[0])));
+  } catch {
+    throw new Error("invalid token header");
+  }
+}
+
+function validateJwtClaims(payload, options = {}) {
   const now = options.now ?? Math.floor(Date.now() / 1000);
   if (typeof payload.exp !== "number" || now >= payload.exp) throw new Error("token expired");
-  if (options.audience != null && payload.aud !== options.audience) {
-    throw new Error("invalid token audience");
+  if (typeof payload.nbf === "number" && now < payload.nbf) throw new Error("token not active");
+  if (options.issuer != null && payload.iss !== options.issuer) {
+    throw new Error("invalid token issuer");
   }
+  if (options.audience != null) {
+    const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    if (!audiences.includes(options.audience)) throw new Error("invalid token audience");
+  }
+}
+
+export async function verifyJwtRs256(token, jwks, options = {}) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) throw new Error("invalid token format");
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const header = decodeJwtHeader(token);
+  if (header.alg !== "RS256" || !header.kid) throw new Error("invalid token algorithm or key id");
+  const keys = Array.isArray(jwks?.keys) ? jwks.keys : [];
+  const jwk = keys.find(
+    (key) => key?.kid === header.kid && key?.kty === "RSA" && (!key.alg || key.alg === "RS256")
+  );
+  if (!jwk) throw new Error("unknown token key id");
+
+  let key;
+  try {
+    key = await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+  } catch {
+    throw new Error("invalid token public key");
+  }
+  const valid = await crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5",
+    key,
+    base64UrlDecode(signatureB64),
+    textEncoder.encode(`${headerB64}.${payloadB64}`)
+  );
+  if (!valid) throw new Error("invalid token signature");
+
+  let payload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(payloadB64)));
+  } catch {
+    throw new Error("invalid token payload");
+  }
+  validateJwtClaims(payload, options);
   return payload;
 }
 

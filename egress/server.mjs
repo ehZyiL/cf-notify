@@ -12,6 +12,7 @@
  */
 
 import http from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 const PORT = Number(process.env.PORT || 8789);
 const APP_ID = process.env.WECHAT_APP_ID || "";
@@ -19,6 +20,14 @@ const APP_SECRET = process.env.WECHAT_APP_SECRET || "";
 const SHARED = process.env.EGRESS_SHARED_SECRET || "";
 
 let tokenCache = { accessToken: null, expiresAt: 0 };
+const MAX_BODY_BYTES = 64 * 1024;
+const UPSTREAM_TIMEOUT_MS = 10_000;
+
+function sameSecret(provided, expected) {
+  const left = createHash("sha256").update(String(provided || "")).digest();
+  const right = createHash("sha256").update(String(expected || "")).digest();
+  return timingSafeEqual(left, right);
+}
 
 async function getAccessToken() {
   if (tokenCache.accessToken && Date.now() < tokenCache.expiresAt - 60_000) {
@@ -28,7 +37,7 @@ async function getAccessToken() {
   const url =
     `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential` +
     `&appid=${encodeURIComponent(APP_ID)}&secret=${encodeURIComponent(APP_SECRET)}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
   const data = await res.json();
   if (!data.access_token) {
     throw new Error(data.errmsg || "failed to get access_token");
@@ -43,8 +52,23 @@ async function getAccessToken() {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    let total = 0;
+    let rejected = false;
+    req.on("data", (chunk) => {
+      if (rejected) return;
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        rejected = true;
+        const error = new Error("request body is too large");
+        error.statusCode = 413;
+        reject(error);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!rejected) resolve(Buffer.concat(chunks).toString("utf8"));
+    });
     req.on("error", reject);
   });
 }
@@ -66,7 +90,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   const key = req.headers["x-egress-key"];
-  if (!SHARED || key !== SHARED) {
+  if (!SHARED || !sameSecret(key, SHARED)) {
     return sendJson(res, 401, { ok: false, error: "unauthorized" });
   }
 
@@ -84,6 +108,7 @@ const server = http.createServer(async (req, res) => {
         `https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${accessToken}`,
         {
           method: "POST",
+          signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             touser: openid,
@@ -103,7 +128,10 @@ const server = http.createServer(async (req, res) => {
       }
       return sendJson(res, 200, { ok: true, msgid: wxData.msgid });
     } catch (e) {
-      return sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
+      return sendJson(res, e?.statusCode || 500, {
+        ok: false,
+        error: e && e.message ? e.message : String(e)
+      });
     }
   }
 

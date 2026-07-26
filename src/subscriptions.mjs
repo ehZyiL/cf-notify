@@ -99,6 +99,48 @@ export async function isSubscribed(db, { userId, serviceId, eventType }) {
   return false;
 }
 
+/** Resolve requested channels against the user's current event preferences. */
+export async function resolveSubscribedChannels(
+  db,
+  { userId, serviceId, eventType, channels, defaultOpen = true }
+) {
+  const requested = [...new Set((channels || ["wechat_oa"]).map(String))];
+  const { results } = await db
+    .prepare(
+      `SELECT event_type, channels_json, enabled FROM subscriptions
+       WHERE user_id = ? AND (service_id = ? OR service_id = '*')`
+    )
+    .bind(userId, serviceId)
+    .all();
+  const rows = results || [];
+  if (rows.length === 0) return defaultOpen ? requested : [];
+
+  const matching = rows.filter(
+    (row) => Number(row.enabled) === 1 && (row.event_type === eventType || row.event_type === "*")
+  );
+  if (!matching.length) return [];
+
+  const allowed = new Set();
+  for (const row of matching) {
+    let configured = [];
+    try {
+      configured = JSON.parse(row.channels_json || "[]");
+    } catch {
+      configured = [];
+    }
+    if (Array.isArray(configured)) configured.forEach((channel) => allowed.add(String(channel)));
+  }
+  return requested.filter((channel) => allowed.has(channel));
+}
+
+export async function isChannelSubscribed(db, input) {
+  const channels = await resolveSubscribedChannels(db, {
+    ...input,
+    channels: [input.channel]
+  });
+  return channels.includes(input.channel);
+}
+
 export async function deleteSubscription(db, id, userId) {
   const row = await getSubscription(db, id);
   if (!row || row.userId !== userId) return false;

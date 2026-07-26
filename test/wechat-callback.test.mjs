@@ -4,6 +4,9 @@ import { createMemoryKv } from "../src/memory-kv.mjs";
 import { createMemoryDb } from "../src/sqlite-d1.mjs";
 import { createBindCode, listBindingsForUser } from "../src/bindings.mjs";
 import {
+  claimWechatCallback,
+  isFreshWechatTimestamp,
+  verifyWechatAesSignature,
   verifyWechatSignature,
   parseWechatXml,
   handleWechatMessage
@@ -27,6 +30,25 @@ describe("S4 wechat callback", () => {
     );
   });
 
+  it("verifies AES signatures, timestamp freshness, and callback replay claims", async () => {
+    const token = "myToken";
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const nonce = "nonce-aes";
+    const encrypt = "encrypted-payload";
+    const msgSignature = await sha1Hex([token, timestamp, nonce, encrypt].sort().join(""));
+    assert.equal(
+      await verifyWechatAesSignature(token, { msgSignature, timestamp, nonce, encrypt }),
+      true
+    );
+    assert.equal(isFreshWechatTimestamp(timestamp), true);
+    assert.equal(isFreshWechatTimestamp("1710000000"), false);
+
+    const db = createMemoryDb();
+    const receipt = { signature: msgSignature, timestamp, nonce, body: "<xml/>" };
+    assert.equal(await claimWechatCallback(db, receipt), true);
+    assert.equal(await claimWechatCallback(db, receipt), false);
+  });
+
   it("parses wechat xml message", () => {
     const xml = `<xml>
       <ToUserName><![CDATA[gh_x]]></ToUserName>
@@ -42,7 +64,7 @@ describe("S4 wechat callback", () => {
   it("binds user when message content is a valid code", async () => {
     const kv = createMemoryKv();
     const db = createMemoryDb();
-    const { code } = await createBindCode(kv, {
+    const { code } = await createBindCode(db, {
       userId: "user-42",
       channel: "wechat_oa"
     });

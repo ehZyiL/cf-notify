@@ -73,7 +73,7 @@ function switchPage(name) {
 function renderClients() {
   const tb = $("clients-tbody");
   if (!state.clients.length) {
-    tb.innerHTML = `<tr><td colspan="4" class="muted">暂无凭证，请在左侧创建。</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="7" class="muted">暂无凭证，请在左侧创建。</td></tr>`;
     return;
   }
   tb.innerHTML = state.clients
@@ -82,7 +82,10 @@ function renderClients() {
       <td class="mono">${escapeHtml(c.clientId)}</td>
       <td>${escapeHtml(c.serviceId)}</td>
       <td>${escapeHtml(c.name)}</td>
+      <td class="mono wrap">${escapeHtml((c.scopes || []).join(", ") || "—")}</td>
+      <td>${c.expiresAt ? escapeHtml(new Date(c.expiresAt).toLocaleString("zh-CN")) : "长期"}</td>
       <td><span class="badge ${c.enabled ? "badge-ok" : "badge-muted"}">${c.enabled ? "启用" : "停用"}</span></td>
+      <td>${c.enabled ? `<button type="button" class="btn btn-danger btn-sm" data-revoke-client="${escapeHtml(c.clientId)}">撤销</button>` : "—"}</td>
     </tr>`
     )
     .join("");
@@ -178,7 +181,14 @@ $("client-form").onsubmit = async (e) => {
   try {
     const body = {
       serviceId: $("client-service").value.trim(),
-      name: $("client-name").value.trim() || undefined
+      name: $("client-name").value.trim() || undefined,
+      scopes: [
+        $("client-scope-send").checked ? "notifications.send" : null,
+        $("client-scope-read").checked ? "notifications.delivery.read" : null
+      ].filter(Boolean),
+      expiresAt: $("client-expires").value
+        ? new Date($("client-expires").value).toISOString()
+        : undefined
     };
     const id = $("client-id").value.trim();
     if (id) body.clientId = id;
@@ -194,6 +204,21 @@ $("client-form").onsubmit = async (e) => {
     toast("凭证已创建", "ok");
   } catch (err) {
     toast(err.message, "err");
+  }
+};
+
+$("clients-tbody").onclick = async (event) => {
+  const button = event.target.closest("[data-revoke-client]");
+  if (!button) return;
+  if (!confirm(`确定撤销凭证 ${button.dataset.revokeClient}？`)) return;
+  try {
+    await adminApi(`/api/admin/clients/${encodeURIComponent(button.dataset.revokeClient)}`, {
+      method: "DELETE"
+    });
+    await loadData();
+    toast("凭证已撤销", "ok");
+  } catch (error) {
+    toast(error.message, "err");
   }
 };
 

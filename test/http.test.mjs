@@ -66,7 +66,7 @@ describe("S6 HTTP entry", () => {
     const code = codeRes.data.code;
 
     // WeChat GET verify
-    const timestamp = "1710000000";
+    const timestamp = String(Math.floor(Date.now() / 1000));
     const nonce = "n1";
     const token = env.WECHAT_TOKEN;
     const signature = await sha1Hex([token, timestamp, nonce].sort().join(""));
@@ -153,5 +153,95 @@ describe("S6 HTTP entry", () => {
       body: { user_id: "u" }
     });
     assert.equal(res.status, 401);
+  });
+
+  it("rejects oversized JSON and WeChat callback bodies", async () => {
+    const env = makeEnv();
+    const handler = createAppHandler(env);
+    const oversized = "x".repeat(129 * 1024);
+    const apiResponse = await handler(
+      new Request("https://notify.example.com/api/test/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: oversized })
+      })
+    );
+    assert.equal(apiResponse.status, 413);
+
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const nonce = "oversized";
+    const signature = await sha1Hex([env.WECHAT_TOKEN, timestamp, nonce].sort().join(""));
+    const callbackResponse = await handler(
+      new Request(`https://notify.example.com/wechat/callback?signature=${signature}&timestamp=${timestamp}&nonce=${nonce}`, {
+        method: "POST",
+        body: oversized
+      })
+    );
+    assert.equal(callbackResponse.status, 413);
+  });
+
+  it("accepts and queries a reliable notification event", async () => {
+    const dispatchMessages = [];
+    const env = makeEnv({
+      dispatchQueue: { send: async (body) => dispatchMessages.push(body) },
+      deliveryQueue: { send: async () => {} }
+    });
+    const handler = createAppHandler(env);
+    const serviceClient = await createNotifyClient(env.db, {
+      serviceId: "xy-erp",
+      clientSecret: "reliable-secret"
+    });
+    const auth = { Authorization: `Bearer ${serviceClient.clientId}:reliable-secret` };
+
+    const missingKey = await jsonFetch(handler, "/api/v1/notifications", {
+      method: "POST",
+      headers: auth,
+      body: { userId: "user-event", type: "order.approved", data: { orderNo: "1" } }
+    });
+    assert.equal(missingKey.status, 400);
+
+    const accepted = await jsonFetch(handler, "/api/v1/notifications", {
+      method: "POST",
+      headers: { ...auth, "Idempotency-Key": "order:1:approved" },
+      body: { userId: "user-event", type: "order.approved", data: { orderNo: "1" } }
+    });
+    assert.equal(accepted.status, 202);
+    assert.equal(accepted.data.status, "accepted");
+    assert.equal(dispatchMessages.length, 1);
+
+    const status = await jsonFetch(handler, `/api/v1/notifications/${accepted.data.eventId}`, {
+      headers: auth
+    });
+    assert.equal(status.status, 200);
+    assert.equal(status.data.eventId, accepted.data.eventId);
+    assert.deepEqual(status.data.deliveries, []);
+  });
+
+  it("only lets a user manage subscriptions for assigned services", async () => {
+    const env = makeEnv({ ENFORCE_USER_SERVICE_MEMBERSHIP: "true" });
+    const handler = createAppHandler(env);
+    const deniedToken = await signJwtHs256(
+      { sub: "user-sub", services: [] },
+      JWT_SECRET,
+      { ttlSeconds: 3600 }
+    );
+    const denied = await jsonFetch(handler, "/api/subscriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${deniedToken}` },
+      body: { serviceId: "xy-erp", eventType: "order.approved" }
+    });
+    assert.equal(denied.status, 403);
+
+    const allowedToken = await signJwtHs256(
+      { sub: "user-sub", services: [{ id: "xy-erp", role: "user" }] },
+      JWT_SECRET,
+      { ttlSeconds: 3600 }
+    );
+    const allowed = await jsonFetch(handler, "/api/subscriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${allowedToken}` },
+      body: { serviceId: "xy-erp", eventType: "order.approved" }
+    });
+    assert.equal(allowed.status, 200);
   });
 });
