@@ -3,7 +3,8 @@ const KEY_STORAGE = "cf_notify_admin_key";
 const state = {
   key: sessionStorage.getItem(KEY_STORAGE) || "",
   clients: [],
-  logs: []
+  logs: [],
+  guides: []
 };
 
 const $ = (id) => document.getElementById(id);
@@ -64,10 +65,55 @@ function switchPage(name) {
   const titles = {
     overview: "总览",
     clients: "服务凭证",
+    guides: "渠道引导",
     templates: "模板映射",
     logs: "投递日志"
   };
   $("page-title").textContent = titles[name] || name;
+}
+
+function safeHttpsUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return parsed.protocol === "https:" ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function currentGuide() {
+  return state.guides.find((guide) => guide.channel === $("guide-channel").value) || null;
+}
+
+function renderGuidePreview() {
+  const imageUrl = safeHttpsUrl($("guide-image-url").value);
+  const actionUrl = safeHttpsUrl($("guide-action-url").value);
+  const accountName = $("guide-account-name").value.trim();
+  const displayName = $("guide-display-name").value.trim() || "通知渠道";
+  const description = $("guide-description").value.trim();
+  const actionLabel = $("guide-action-label").value.trim() || "打开入口";
+  $("guide-preview").innerHTML = `
+    ${imageUrl ? `<a href="${escapeHtml(imageUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(displayName)}二维码"></a>` : `<div class="guide-preview-empty">未配置二维码链接</div>`}
+    <div class="guide-preview-copy">
+      <strong>${escapeHtml(accountName || displayName)}</strong>
+      ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+      ${actionUrl ? `<a class="btn btn-secondary btn-sm" href="${escapeHtml(actionUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(actionLabel)}</a>` : ""}
+    </div>`;
+}
+
+function renderGuideForm() {
+  const guide = currentGuide();
+  if (!guide) return;
+  $("guide-enabled").checked = Boolean(guide.enabled);
+  $("guide-display-name").value = guide.displayName || "";
+  $("guide-account-name").value = guide.accountName || "";
+  $("guide-description").value = guide.description || "";
+  $("guide-image-url").value = guide.imageUrl || "";
+  $("guide-action-url").value = guide.actionUrl || "";
+  $("guide-action-label").value = guide.actionLabel || "";
+  $("guide-source").textContent = guide.source === "kv" ? "动态配置" : "环境默认";
+  $("guide-source").className = `badge ${guide.source === "kv" ? "badge-ok" : "badge-muted"}`;
+  renderGuidePreview();
 }
 
 function renderClients() {
@@ -136,14 +182,17 @@ async function loadHealth() {
 }
 
 async function loadData() {
-  const [clients, logs] = await Promise.all([
+  const [clients, logs, guides] = await Promise.all([
     adminApi("/api/admin/clients"),
-    adminApi("/api/admin/logs?limit=50")
+    adminApi("/api/admin/logs?limit=50"),
+    adminApi("/api/admin/channel-guides")
   ]);
   state.clients = clients.clients || [];
   state.logs = logs.logs || [];
+  state.guides = guides.guides || [];
   renderClients();
   renderLogs();
+  renderGuideForm();
   await loadHealth();
 }
 
@@ -175,6 +224,47 @@ $("btn-admin-refresh").onclick = () =>
 document.querySelectorAll(".nav button").forEach((btn) => {
   btn.addEventListener("click", () => switchPage(btn.dataset.page));
 });
+
+$("guide-channel").onchange = renderGuideForm;
+$("guide-form").addEventListener("input", renderGuidePreview);
+$("guide-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const channel = $("guide-channel").value;
+  try {
+    const data = await adminApi(`/api/admin/channel-guides/${encodeURIComponent(channel)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: $("guide-enabled").checked,
+        displayName: $("guide-display-name").value,
+        accountName: $("guide-account-name").value,
+        description: $("guide-description").value,
+        imageUrl: $("guide-image-url").value,
+        actionUrl: $("guide-action-url").value,
+        actionLabel: $("guide-action-label").value
+      })
+    });
+    state.guides = state.guides.map((guide) => guide.channel === channel ? data.guide : guide);
+    renderGuideForm();
+    toast("渠道引导已保存", "ok");
+  } catch (error) {
+    toast(error.message, "err");
+  }
+};
+
+$("guide-reset").onclick = async () => {
+  const channel = $("guide-channel").value;
+  if (!confirm("恢复此渠道的环境默认配置？")) return;
+  try {
+    const data = await adminApi(`/api/admin/channel-guides/${encodeURIComponent(channel)}`, {
+      method: "DELETE"
+    });
+    state.guides = state.guides.map((guide) => guide.channel === channel ? data.guide : guide);
+    renderGuideForm();
+    toast("已恢复环境默认", "ok");
+  } catch (error) {
+    toast(error.message, "err");
+  }
+};
 
 $("client-form").onsubmit = async (e) => {
   e.preventDefault();

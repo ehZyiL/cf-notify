@@ -51,6 +51,11 @@ import {
   revokeDirectoryNotificationBinding,
   usesNotificationDirectoryRpc
 } from "./notification-directory.mjs";
+import {
+  listChannelGuides,
+  resetChannelGuide,
+  saveChannelGuide
+} from "./channel-guides.mjs";
 
 /**
  * @param {object} env
@@ -228,6 +233,19 @@ async function handleWecomCallback(request, env, url) {
 }
 
 async function handleApi(request, env, parts, url) {
+  if (parts[0] === "channel-guides" && request.method === "GET") {
+    return json(
+      { guides: await listChannelGuides(env) },
+      {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "public, max-age=60",
+          "Cross-Origin-Resource-Policy": "cross-origin"
+        }
+      }
+    );
+  }
+
   if (parts[0] === "test" && parts[1] === "token" && request.method === "POST") {
     if (env.ALLOW_TEST_TOKEN !== "true" && env.ALLOW_TEST_TOKEN !== "1") {
       throw new HttpError(404, "not found");
@@ -264,6 +282,19 @@ async function handleApi(request, env, parts, url) {
 
   if (parts[0] === "admin") {
     await requireBootstrapAdmin(env, request);
+    if (parts[1] === "channel-guides") {
+      if (!parts[2] && request.method === "GET") {
+        return json({ guides: await listChannelGuides(env, { includeDisabled: true }) });
+      }
+      if (parts[2] && request.method === "PUT") {
+        const guide = await saveChannelGuide(env, parts[2], await readJson(request));
+        return json({ guide });
+      }
+      if (parts[2] && request.method === "DELETE") {
+        return json({ guide: await resetChannelGuide(env, parts[2]) });
+      }
+      throw new HttpError(405, "method not allowed");
+    }
     if (parts[1] === "clients") {
       if (!parts[2] && request.method === "GET") return json({ clients: await listNotifyClients(env.db) });
       if (!parts[2] && request.method === "POST") {

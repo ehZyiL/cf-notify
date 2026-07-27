@@ -37,6 +37,8 @@ npm test
 | GET | `/api/logs` | 用户 JWT |
 | GET/POST | `/wechat/callback` | 微信签名 |
 | GET/POST | `/wecom/callback` | 企业微信签名 + AES 加密 |
+| GET | `/api/channel-guides` | 公开，只读渠道引导 |
+| GET/PUT/DELETE | `/api/admin/channel-guides/:channel?` | Bootstrap Key |
 | POST | `/api/admin/clients` | Bootstrap Key |
 | DELETE | `/api/admin/clients/:clientId` | Bootstrap Key |
 | GET | `/api/admin/logs` | Bootstrap Key |
@@ -49,7 +51,7 @@ npm test
 | 路径 | 说明 |
 |------|------|
 | `/` | **用户通知中心**（绑定公众号/企业微信、订阅、投递记录） |
-| `/admin` | **运营控制台**（凭证、模板映射、日志、重试） |
+| `/admin` | **运营控制台**（渠道引导、凭证、模板映射、日志、重试） |
 
 设计：Indigo 品牌色、侧栏控制台 + 门户双栏，适配桌面/移动。
 
@@ -67,6 +69,8 @@ WECHAT_APP_ID=
 WECOM_CALLBACK_TOKEN=...
 WECOM_ENCODING_AES_KEY=          # 企业微信 43 字符 EncodingAESKey
 WECOM_CORP_ID=ww...
+WECOM_ACCOUNT_NAME=企业名称
+WECOM_QRCODE_URL=https://notify.example.com/channel-assets/wecom-join.jpg
 WECOM_APP_URL=https://work.weixin.qq.com/...
 EGRESS_BASE_URL=http://127.0.0.1:8789
 EGRESS_SHARED_SECRET=...
@@ -88,6 +92,8 @@ NOTIFICATION_DIRECTORY_MODE=rpc
 RPC 返回的 openid / 企业微信 UserID 只存在于当前 Worker 调用内存，不写入 cf-notify D1、Queue 或响应。企业微信 MVP 只允许绑定单个成员并向该成员发送自建应用消息，不接受部门、标签、多个成员或 `@all` 广播。
 
 企业微信回调侧配置 `WECOM_CALLBACK_TOKEN`、`WECOM_ENCODING_AES_KEY`、`WECOM_CORP_ID`、`WECOM_PROVIDER_ACCOUNT_ID` 和可选的 `WECOM_APP_URL`。固定 IP egress 单独配置 `WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_AGENT_ID`；AppSecret 不进入 Worker、浏览器、D1 或 Queue。消息有 HTTPS 详情地址时发送 `textcard`，否则发送 `text`。
+
+渠道引导由 `/api/channel-guides` 公开只读提供。管理端只把 `imageUrl`、`actionUrl` 等非敏感元数据写入 KV，优先级为 KV 动态配置 > Worker vars > 内置文案；二维码二进制仍托管在静态资源或外部 CDN，不写入 KV。微信公众号、企业微信和 Telegram 均使用相同结构，新增渠道入口不需要修改 cf-auth 页面结构。
 
 可靠投递使用四个 Queue。首次部署前创建并应用新增迁移：
 

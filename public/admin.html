@@ -33,6 +33,7 @@
       <nav class="nav" aria-label="管理导航">
         <button type="button" class="active" data-page="overview">总览</button>
         <button type="button" data-page="clients">服务凭证</button>
+        <button type="button" data-page="guides">渠道引导</button>
         <button type="button" data-page="templates">模板映射</button>
         <button type="button" data-page="logs">投递日志</button>
       </nav>
@@ -135,6 +136,66 @@
                   <tbody id="clients-tbody"></tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="page-guides" class="page">
+          <div class="grid-2">
+            <form id="guide-form" class="card">
+              <div class="card-head">
+                <div>
+                  <p class="eyebrow">Channel Guide</p>
+                  <h2>绑定入口</h2>
+                </div>
+                <span id="guide-source" class="badge badge-muted">环境默认</span>
+              </div>
+              <label class="field">
+                <span>渠道</span>
+                <select id="guide-channel">
+                  <option value="wechat_oa">微信公众号</option>
+                  <option value="wecom">企业微信</option>
+                  <option value="telegram">Telegram</option>
+                </select>
+              </label>
+              <label class="guide-enabled"><input id="guide-enabled" type="checkbox"> 对用户展示此引导</label>
+              <label class="field">
+                <span>渠道名称</span>
+                <input id="guide-display-name" maxlength="80" required>
+              </label>
+              <label class="field">
+                <span>账号或企业名称</span>
+                <input id="guide-account-name" maxlength="120">
+              </label>
+              <label class="field">
+                <span>引导文案</span>
+                <textarea id="guide-description" maxlength="300" rows="3"></textarea>
+              </label>
+              <label class="field">
+                <span>二维码图片链接</span>
+                <input id="guide-image-url" type="url" inputmode="url" placeholder="https://...">
+              </label>
+              <label class="field">
+                <span>打开入口链接</span>
+                <input id="guide-action-url" type="url" inputmode="url" placeholder="https://...">
+              </label>
+              <label class="field">
+                <span>入口按钮文字</span>
+                <input id="guide-action-label" maxlength="40">
+              </label>
+              <div class="row-actions">
+                <button class="btn btn-primary" type="submit">保存引导</button>
+                <button id="guide-reset" class="btn btn-ghost" type="button">恢复环境默认</button>
+              </div>
+            </form>
+            <div class="card guide-preview-wrap">
+              <div class="card-head">
+                <div>
+                  <p class="eyebrow">Preview</p>
+                  <h2>用户侧预览</h2>
+                </div>
+              </div>
+              <div id="guide-preview" class="guide-preview"></div>
             </div>
           </div>
         </section>

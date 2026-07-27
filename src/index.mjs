@@ -9,7 +9,7 @@ const ASSET_SECURITY_POLICY = [
   "form-action 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' data: https:",
   "connect-src 'self'",
   "upgrade-insecure-requests"
 ].join("; ");
@@ -22,8 +22,11 @@ async function serveAsset(env, request) {
   headers.set("X-Frame-Options", "DENY");
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  headers.set("Cross-Origin-Resource-Policy", "same-origin");
   const pathname = new URL(request.url).pathname;
+  headers.set(
+    "Cross-Origin-Resource-Policy",
+    pathname.startsWith("/channel-assets/") ? "cross-origin" : "same-origin"
+  );
   headers.set(
     "Cache-Control",
     pathname.endsWith(".html") || !pathname.includes(".") ? "no-store" : "no-cache"
@@ -51,6 +54,8 @@ function createRuntime(env) {
     WECHAT_AES_KEY: env.WECHAT_AES_KEY,
     WECHAT_APP_ID: env.WECHAT_APP_ID,
     WECHAT_QRCODE_URL: env.WECHAT_QRCODE_URL,
+    WECHAT_ACCOUNT_NAME: env.WECHAT_ACCOUNT_NAME,
+    WECHAT_ACCOUNT_URL: env.WECHAT_ACCOUNT_URL,
     WECHAT_DEFAULT_TEMPLATE_ID: env.WECHAT_DEFAULT_TEMPLATE_ID,
     WECHAT_SEND_MODE: env.WECHAT_SEND_MODE,
     WECHAT_CODE_LOGIN_ENABLED: env.WECHAT_CODE_LOGIN_ENABLED,
@@ -59,7 +64,12 @@ function createRuntime(env) {
     WECOM_ENCODING_AES_KEY: env.WECOM_ENCODING_AES_KEY,
     WECOM_CORP_ID: env.WECOM_CORP_ID,
     WECOM_PROVIDER_ACCOUNT_ID: env.WECOM_PROVIDER_ACCOUNT_ID,
+    WECOM_ACCOUNT_NAME: env.WECOM_ACCOUNT_NAME,
+    WECOM_QRCODE_URL: env.WECOM_QRCODE_URL,
     WECOM_APP_URL: env.WECOM_APP_URL,
+    TELEGRAM_BOT_NAME: env.TELEGRAM_BOT_NAME,
+    TELEGRAM_BOT_URL: env.TELEGRAM_BOT_URL,
+    TELEGRAM_QRCODE_URL: env.TELEGRAM_QRCODE_URL,
     BIND_CODE_TTL_SEC: env.BIND_CODE_TTL_SEC,
     EGRESS_BASE_URL: env.EGRESS_BASE_URL,
     EGRESS_SHARED_SECRET: env.EGRESS_SHARED_SECRET,

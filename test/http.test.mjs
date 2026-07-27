@@ -146,6 +146,57 @@ describe("S6 HTTP entry", () => {
     assert.ok(res.data.client.clientSecret);
   });
 
+  it("publishes and dynamically updates channel guide links", async () => {
+    const env = makeEnv({
+      WECOM_ACCOUNT_NAME: "Example Corp",
+      WECOM_QRCODE_URL: "https://notify.example.com/channel-assets/wecom-join.jpg"
+    });
+    const handler = createAppHandler(env);
+
+    const initial = await jsonFetch(handler, "/api/channel-guides");
+    assert.equal(initial.status, 200);
+    assert.equal(initial.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(initial.data.guides.length, 1);
+    assert.equal(initial.data.guides[0].channel, "wecom");
+    assert.equal(initial.data.guides[0].accountName, "Example Corp");
+
+    const updated = await jsonFetch(handler, "/api/admin/channel-guides/wecom", {
+      method: "PUT",
+      headers: { "X-Admin-Bootstrap-Key": "boot-admin" },
+      body: {
+        enabled: true,
+        accountName: "Updated Corp",
+        imageUrl: "https://cdn.example.com/wecom.jpg",
+        actionUrl: "https://work.weixin.qq.com/example"
+      }
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.data.guide.source, "kv");
+
+    const dynamic = await jsonFetch(handler, "/api/channel-guides");
+    assert.equal(dynamic.data.guides[0].accountName, "Updated Corp");
+    assert.equal(dynamic.data.guides[0].imageUrl, "https://cdn.example.com/wecom.jpg");
+
+    const reset = await jsonFetch(handler, "/api/admin/channel-guides/wecom", {
+      method: "DELETE",
+      headers: { "X-Admin-Bootstrap-Key": "boot-admin" }
+    });
+    assert.equal(reset.status, 200);
+    assert.equal(reset.data.guide.source, "env");
+    assert.equal(reset.data.guide.accountName, "Example Corp");
+  });
+
+  it("rejects insecure channel guide links", async () => {
+    const handler = createAppHandler(makeEnv());
+    const response = await jsonFetch(handler, "/api/admin/channel-guides/wecom", {
+      method: "PUT",
+      headers: { "X-Admin-Bootstrap-Key": "boot-admin" },
+      body: { enabled: true, imageUrl: "http://example.com/wecom.jpg" }
+    });
+    assert.equal(response.status, 400);
+    assert.match(response.data.error, /HTTPS URL/);
+  });
+
   it("rejects send without service auth", async () => {
     const handler = createAppHandler(makeEnv());
     const res = await jsonFetch(handler, "/api/v1/send", {
@@ -356,9 +407,11 @@ describe("S6 HTTP entry", () => {
 describe("notification portal assets", () => {
   it("offers both WeChat notification channels", async () => {
     const { readFile } = await import("node:fs/promises");
-    const [html, script] = await Promise.all([
+    const [html, script, adminHtml, adminScript] = await Promise.all([
       readFile(new URL("../public/index.html", import.meta.url), "utf8"),
-      readFile(new URL("../public/me.js", import.meta.url), "utf8")
+      readFile(new URL("../public/me.js", import.meta.url), "utf8"),
+      readFile(new URL("../public/admin.html", import.meta.url), "utf8"),
+      readFile(new URL("../public/admin.js", import.meta.url), "utf8")
     ]);
 
     assert.match(html, /data-bind-channel="wechat_oa"/);
@@ -366,5 +419,7 @@ describe("notification portal assets", () => {
     assert.match(script, /企业微信通知绑定/);
     assert.match(script, /currentChannel: "wechat_oa"/);
     assert.match(script, /channel: state\.currentChannel/);
+    assert.match(adminHtml, /id="guide-form"/);
+    assert.match(adminScript, /\/api\/admin\/channel-guides/);
   });
 });

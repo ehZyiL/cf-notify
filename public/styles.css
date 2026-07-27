@@ -103,6 +103,16 @@ h1, h2, h3, p { margin-top: 0; }
   box-shadow: 0 0 0 4px var(--brand-glow);
 }
 .field textarea { min-height: 88px; resize: vertical; font-family: var(--mono); font-size: 12px; }
+.guide-enabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 650;
+}
+.guide-enabled input { width: 1rem; height: 1rem; }
 
 /* —— Badge —— */
 .badge {
@@ -479,6 +489,32 @@ h1, h2, h3, p { margin-top: 0; }
   font-size: 12px;
   word-break: break-all;
   line-height: 1.5;
+}
+
+.guide-preview-wrap { min-height: 30rem; }
+.guide-preview {
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  text-align: center;
+}
+.guide-preview img {
+  display: block;
+  width: min(100%, 19rem);
+  max-height: 29rem;
+  border: 1px solid var(--line);
+  object-fit: contain;
+}
+.guide-preview-copy { display: grid; justify-items: center; gap: 10px; }
+.guide-preview-copy strong { font-size: 18px; }
+.guide-preview-copy p { margin: 0; color: var(--muted); line-height: 1.55; }
+.guide-preview-empty {
+  display: grid;
+  width: min(100%, 19rem);
+  aspect-ratio: 4 / 5;
+  place-items: center;
+  border: 1px dashed var(--line-strong);
+  color: var(--muted);
 }
 
 .table-wrap {

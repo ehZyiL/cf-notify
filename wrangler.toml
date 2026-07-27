@@ -38,6 +38,8 @@ WECHAT_SEND_MODE = "custom_text"
 WECOM_CALLBACK_MAX_SKEW_SEC = "300"
 WECOM_PROVIDER_ACCOUNT_ID = "wecom-main"
 WECOM_CORP_ID = "ww37c322e2b04fab42"
+WECOM_ACCOUNT_NAME = "ehzyil的快乐星球"
+WECOM_QRCODE_URL = "https://cf-notify.ehzyil.cc.cd/channel-assets/wecom-join.jpg"
 
 [[queues.producers]]
 binding = "NOTIFY_DISPATCH_QUEUE"
