@@ -71,7 +71,7 @@ WECHAT_CODE_LOGIN_ENABLED=false
 NOTIFICATION_DIRECTORY_MODE=local # cf-auth RPC 上线且完成数据迁移后改为 rpc
 ```
 
-未认证公众号使用 `WECHAT_SEND_MODE=custom_text`，通过客服消息接口发送纯文本，用户必须在微信允许的互动窗口内。公众号认证并配置模板后，可切回 `template` 并维护 `channel_apps` 模板映射。
+`WECHAT_SEND_MODE=custom_text` 仅适用于公众号接口权限中已开通客服消息能力的账号，且用户必须在微信允许的互动窗口内。未认证账号若返回 `48001 api unauthorized`，不能主动发送客服消息，只能在用户发消息时被动回复；需要认证/升级账号或改用其他通知渠道。公众号开通模板能力后，可切回 `template` 并维护 `channel_apps` 模板映射。
 
 生产用户 JWT 使用 `CF_AUTH` Service Binding 获取 cf-auth RS256 JWKS，不共享私钥或 HMAC secret。`CF_AUTH_ISSUER`、Service Binding、Queue 和 D1/KV binding 在 `wrangler.toml` 中声明。
 

@@ -61,4 +61,32 @@ describe("WeChat customer-service text delivery", () => {
       deliveryId: "delivery-2"
     });
   });
+
+  it("does not retry an account capability rejection", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => Response.json(
+      { ok: false, error: "api unauthorized", errcode: 48001 },
+      { status: 403 }
+    );
+    try {
+      const result = await sendWechatCustomText(
+        {
+          EGRESS_BASE_URL: "https://egress.example",
+          EGRESS_SHARED_SECRET: "shared-secret"
+        },
+        { openid: "openid-3", text: "Plain text" }
+      );
+
+      assert.deepEqual(result, {
+        ok: false,
+        retryable: false,
+        outcomeUnknown: false,
+        errorCode: "wechat_48001",
+        error: "api unauthorized",
+        providerMsgId: null
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

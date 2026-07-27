@@ -63,7 +63,9 @@ async function callWechatApi(path, payload) {
   const data = await response.json();
   if (data.errcode && data.errcode !== 0) {
     const error = new Error(data.errmsg || `wechat errcode ${data.errcode}`);
-    error.statusCode = 502;
+    // 48001 means this account has not been granted the requested API. Retrying
+    // cannot succeed until the account's WeChat capabilities change.
+    error.statusCode = data.errcode === 48001 ? 403 : 502;
     error.errcode = data.errcode;
     throw error;
   }

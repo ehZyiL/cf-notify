@@ -87,7 +87,11 @@ async function sendWechatEgress(env, { path, payload, deliveryId }) {
       ok: false,
       retryable,
       outcomeUnknown: false,
-      errorCode: res.status === 429 ? "provider_rate_limited" : `provider_http_${res.status}`,
+      errorCode: body.errcode != null
+        ? `wechat_${body.errcode}`
+        : res.status === 429
+          ? "provider_rate_limited"
+          : `provider_http_${res.status}`,
       error: body.error || body.errmsg || `egress HTTP ${res.status}`,
       providerMsgId: body.msgid || body.msg_id || null
     };
