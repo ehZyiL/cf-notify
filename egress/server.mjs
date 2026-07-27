@@ -22,6 +22,19 @@ const SHARED = process.env.EGRESS_SHARED_SECRET || "";
 let tokenCache = { accessToken: null, expiresAt: 0 };
 const MAX_BODY_BYTES = 64 * 1024;
 const UPSTREAM_TIMEOUT_MS = 10_000;
+const PERMANENT_WECHAT_ERRORS = new Set([40003, 40013, 43004, 45015, 48001]);
+
+function targetFingerprint(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex").slice(0, 16);
+}
+
+function wechatErrorStatus(errcode) {
+  if (errcode === -1) return 503;
+  if (errcode === 45009) return 429;
+  if (errcode === 48001) return 403;
+  if (PERMANENT_WECHAT_ERRORS.has(errcode)) return 422;
+  return 502;
+}
 
 function sameSecret(provided, expected) {
   const left = createHash("sha256").update(String(provided || "")).digest();
@@ -63,9 +76,7 @@ async function callWechatApi(path, payload) {
   const data = await response.json();
   if (data.errcode && data.errcode !== 0) {
     const error = new Error(data.errmsg || `wechat errcode ${data.errcode}`);
-    // 48001 means this account has not been granted the requested API. Retrying
-    // cannot succeed until the account's WeChat capabilities change.
-    error.statusCode = data.errcode === 48001 ? 403 : 502;
+    error.statusCode = wechatErrorStatus(data.errcode);
     error.errcode = data.errcode;
     throw error;
   }
@@ -143,6 +154,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/wechat/custom/send") {
+    let targetHash = null;
     try {
       const raw = await readBody(req);
       const input = JSON.parse(raw || "{}");
@@ -154,13 +166,28 @@ const server = http.createServer(async (req, res) => {
       if (text.length > 2000) {
         return sendJson(res, 400, { ok: false, error: "text is too long" });
       }
+      targetHash = targetFingerprint(openid);
       const wxData = await callWechatApi("/cgi-bin/message/custom/send", {
         touser: openid,
         msgtype: "text",
         text: { content: text }
       });
+      console.log(JSON.stringify({
+        event: "wechat_custom_send",
+        deliveryId: req.headers["x-delivery-id"] || null,
+        targetHash,
+        ok: true
+      }));
       return sendJson(res, 200, { ok: true, msgid: wxData.msgid || null });
     } catch (e) {
+      console.error(JSON.stringify({
+        event: "wechat_custom_send",
+        deliveryId: req.headers["x-delivery-id"] || null,
+        targetHash,
+        ok: false,
+        errcode: e?.errcode ?? null,
+        error: String(e?.message || e).slice(0, 300)
+      }));
       return sendJson(res, e?.statusCode || 500, {
         ok: false,
         error: e && e.message ? e.message : String(e),

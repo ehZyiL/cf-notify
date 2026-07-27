@@ -89,4 +89,27 @@ describe("WeChat customer-service text delivery", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("does not retry an invalid OpenID", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => Response.json(
+      { ok: false, error: "invalid openid", errcode: 40003 },
+      { status: 422 }
+    );
+    try {
+      const result = await sendWechatCustomText(
+        {
+          EGRESS_BASE_URL: "https://egress.example",
+          EGRESS_SHARED_SECRET: "shared-secret"
+        },
+        { openid: "invalid-openid", text: "Plain text" }
+      );
+
+      assert.equal(result.retryable, false);
+      assert.equal(result.errorCode, "wechat_40003");
+      assert.equal(result.error, "invalid openid");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
