@@ -20,7 +20,12 @@ function pkcs7Pad(data, blockSize = 32) {
 
 function pkcs7Unpad(data) {
   const pad = data[data.length - 1];
-  if (pad < 1 || pad > 32) return data;
+  if (pad < 1 || pad > 32 || pad > data.length) {
+    throw new Error("invalid PKCS#7 padding");
+  }
+  for (let index = data.length - pad; index < data.length; index += 1) {
+    if (data[index] !== pad) throw new Error("invalid PKCS#7 padding");
+  }
   return data.subarray(0, data.length - pad);
 }
 
@@ -62,9 +67,12 @@ export async function wechatEncrypt(plainXml, encodingAesKey, appId) {
   const padded = pkcs7Pad(raw, 32);
 
   const cryptoKey = await crypto.subtle.importKey("raw", key, { name: "AES-CBC" }, false, ["encrypt"]);
-  const cipher = new Uint8Array(
+  const cipherWithWebPadding = new Uint8Array(
     await crypto.subtle.encrypt({ name: "AES-CBC", iv }, cryptoKey, padded)
   );
+  // Web Crypto always adds 16-byte PKCS#7 padding. The WeChat protocol has
+  // already padded to 32 bytes, so discard only Web Crypto's final block.
+  const cipher = cipherWithWebPadding.subarray(0, cipherWithWebPadding.length - 16);
   // WeChat uses standard base64
   let binary = "";
   for (const b of cipher) binary += String.fromCharCode(b);
@@ -77,13 +85,38 @@ export async function wechatDecrypt(encryptBase64, encodingAesKey, appId) {
   const binary = atob(String(encryptBase64 || "").replace(/-/g, "+").replace(/_/g, "/"));
   const data = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
+  if (data.length === 0 || data.length % 16 !== 0) {
+    throw new Error("invalid AES-CBC ciphertext length");
+  }
 
-  const cryptoKey = await crypto.subtle.importKey("raw", key, { name: "AES-CBC" }, false, ["decrypt"]);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key,
+    { name: "AES-CBC" },
+    false,
+    ["encrypt", "decrypt"]
+  );
+  // Web Crypto rejects protocol padding values 17-32. Append one synthetic
+  // ciphertext block whose plaintext is valid 16-byte Web Crypto padding;
+  // decrypt() removes that block and leaves the protocol-padded plaintext.
+  const lastBlock = data.subarray(data.length - 16);
+  const syntheticPaddingBlock = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-CBC", iv: lastBlock },
+      cryptoKey,
+      new Uint8Array(0)
+    )
+  );
+  const decryptable = new Uint8Array(data.length + syntheticPaddingBlock.length);
+  decryptable.set(data);
+  decryptable.set(syntheticPaddingBlock, data.length);
   const decrypted = new Uint8Array(
-    await crypto.subtle.decrypt({ name: "AES-CBC", iv }, cryptoKey, data)
+    await crypto.subtle.decrypt({ name: "AES-CBC", iv }, cryptoKey, decryptable)
   );
   const unpadded = pkcs7Unpad(decrypted);
+  if (unpadded.length < 20) throw new Error("invalid encrypted message layout");
   const msgLen = readUInt32BE(unpadded, 16);
+  if (20 + msgLen > unpadded.length) throw new Error("invalid encrypted message length");
   const msg = textDecoder.decode(unpadded.subarray(20, 20 + msgLen));
   const gotAppId = textDecoder.decode(unpadded.subarray(20 + msgLen));
   if (appId && gotAppId !== appId) {

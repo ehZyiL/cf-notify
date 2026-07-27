@@ -1,6 +1,6 @@
 # cf-notify 实现方案
 
-> 独立通知微服务：微信公众号（优先）+ 可扩展 TG；用户绑定以 **cf-auth `user_id`** 为中心；出站微信 API 经 **固定公网 IP 网关**。  
+> 独立通知微服务：微信公众号 + 企业微信自建应用 + 可扩展 TG；用户绑定以 **cf-auth `user_id`** 为中心；出站微信 API 经 **固定公网 IP 网关**。
 > 备选「公众号发码登录」只做预留，默认关闭。
 
 相关文档：
@@ -25,7 +25,7 @@
 ### 1.2 非目标（P1 不做）
 
 - 用公众号发码替代 cf-auth 主登录（仅预留开关与数据字段）
-- 企业微信 / TG 完整实现（接口与表结构预留）
+- 企业微信部门/标签/全员广播，以及 TG 完整实现
 - 复杂订阅中心 UI（可先默认「绑定即接收业务事件」）
 - 把 AppSecret 放进浏览器或 xy-erp 前端
 
@@ -358,10 +358,16 @@ notify:
 | `BIND_CODE_TTL_SEC` | 默认 300 |
 | `SUBSCRIPTIONS_DEFAULT_OPEN` | 生产默认 `false` |
 | `ENFORCE_USER_SERVICE_MEMBERSHIP` | 生产默认 `true` |
-| `NOTIFICATION_DIRECTORY_MODE` | `local` 保持 Phase 1；cf-auth RPC 和数据迁移完成后切换为 `rpc` |
+| `NOTIFICATION_DIRECTORY_MODE` | 生产使用 `rpc`，由 cf-auth 统一管理加密目标和通知策略 |
 | `WECHAT_PROVIDER_ACCOUNT_ID` | RPC 模式的公众号发送主体 ID；未设时回退 `WECHAT_APP_ID` |
 | `WECHAT_SEND_MODE` | `custom_text` 使用客服文本消息；认证公众号可设为 `template` |
 | `WECHAT_CALLBACK_MAX_SKEW_SEC` | 回调时间窗，默认 300 |
+| `WECOM_CALLBACK_TOKEN` | 企业微信回调 Token（Secret） |
+| `WECOM_ENCODING_AES_KEY` | 企业微信回调 EncodingAESKey（Secret） |
+| `WECOM_CORP_ID` | 企业 ID，用于加密消息接收方校验 |
+| `WECOM_PROVIDER_ACCOUNT_ID` | cf-auth 通知目录中的企业微信主体 ID，默认 `wecom-main` |
+| `WECOM_APP_URL` | 可选，账号中心打开企业微信应用的地址 |
+| `WECOM_CALLBACK_MAX_SKEW_SEC` | 企业微信回调时间窗，默认 300 |
 | `EGRESS_TIMEOUT_MS` | egress 超时，默认 10000 |
 
 D1 / KV 绑定：`DB`、`KV`。
@@ -372,6 +378,9 @@ D1 / KV 绑定：`DB`、`KV`。
 |------|------|
 | `WECHAT_APP_ID` | |
 | `WECHAT_APP_SECRET` | |
+| `WECOM_CORP_ID` | 企业 ID |
+| `WECOM_APP_SECRET` | 自建应用 Secret，仅存 egress |
+| `WECOM_AGENT_ID` | 自建应用 AgentId |
 | `EGRESS_SHARED_SECRET` | |
 | `PORT` | |
 
@@ -392,10 +401,10 @@ D1 / KV 绑定：`DB`、`KV`。
 - **P1 不改登录**；用户体系不变。  
 - 文档已预留发码登录：`cf-auth/docs/wechat-notify-and-alt-login.md`。  
 - P2：`WECHAT_CODE_LOGIN_ENABLED` + internal `verify-code` API。
-- 当前 `cf-auth` 尚未实现 `NotificationDirectory` RPC，生产继续使用 `NOTIFICATION_DIRECTORY_MODE=local`。cf-notify 已完成 RPC 客户端与业务接口，待 auth 端上线并迁移权威数据后切换。
-- `rpc` 模式需要 `verifyServiceApiKey`、`getEffectiveNotificationSettings`、`resolveNotificationTargets`、`consumeBindingChallenge` 和 `updateBindingStatus`。RPC 不可用时请求失败，不回退本地 binding/subscription。
+- `cf-auth` 已实现 `NotificationDirectory` RPC，生产配置使用 `NOTIFICATION_DIRECTORY_MODE=rpc`。
+- `rpc` 模式调用 `verifyServiceApiKey`、`getEffectiveNotificationSettings`、`authorizeNotificationEvent`、`resolveNotificationTargets`、`consumeBindingChallenge` 和 `updateBindingStatus`。RPC 不可用时请求失败，不回退本地 binding/subscription。
 - Dispatch 和实际 Delivery 前分别解析一次目标；地址只存在于当前 Worker 调用内存，D1 与 Queue 仅保存 event/delivery/binding ID。
-- 本批次尚未实现 auth 事件目录返回的 payload schema 校验和 `deferUntil` 延迟调度；切换 `rpc` 前必须补齐这两项及对应契约测试。
+- auth 事件目录的 payload schema 校验和 `deferUntil` 延迟调度均已接入可靠投递链路。
 
 ### 9.2 xy-erp
 
@@ -555,4 +564,4 @@ POST /api/v1/notifications
 本地 PostgreSQL 不作为默认存储。Worker 无法直接访问局域网 PostgreSQL；备选方案必须使用 Hyperdrive + 可达 TLS 数据库，或通过 Tunnel + Access 暴露受限存储 API，严禁公网开放 `5432`。仅为微信 IP 白名单时继续使用固定 IP egress，无需更换 D1。
 
 **文档版本：** 2026-07-27
-**状态：** Phase 1/2 基础能力与可靠投递已实现，待真实 Cloudflare/微信环境验收
+**状态：** Phase 1/2 基础能力、可靠投递与企业微信 MVP 已实现，待真实 Cloudflare/微信环境验收

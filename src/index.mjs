@@ -54,6 +54,12 @@ function createRuntime(env) {
     WECHAT_DEFAULT_TEMPLATE_ID: env.WECHAT_DEFAULT_TEMPLATE_ID,
     WECHAT_SEND_MODE: env.WECHAT_SEND_MODE,
     WECHAT_CODE_LOGIN_ENABLED: env.WECHAT_CODE_LOGIN_ENABLED,
+    WECOM_CALLBACK_TOKEN: env.WECOM_CALLBACK_TOKEN,
+    WECOM_CALLBACK_MAX_SKEW_SEC: env.WECOM_CALLBACK_MAX_SKEW_SEC,
+    WECOM_ENCODING_AES_KEY: env.WECOM_ENCODING_AES_KEY,
+    WECOM_CORP_ID: env.WECOM_CORP_ID,
+    WECOM_PROVIDER_ACCOUNT_ID: env.WECOM_PROVIDER_ACCOUNT_ID,
+    WECOM_APP_URL: env.WECOM_APP_URL,
     BIND_CODE_TTL_SEC: env.BIND_CODE_TTL_SEC,
     EGRESS_BASE_URL: env.EGRESS_BASE_URL,
     EGRESS_SHARED_SECRET: env.EGRESS_SHARED_SECRET,
@@ -85,6 +91,7 @@ export default {
       path.startsWith("/api/") ||
       path.startsWith("/v1/") ||
       path.startsWith("/wechat/") ||
+      path.startsWith("/wecom/") ||
       path === "/health" ||
       path === "/healthz" ||
       path === "/api/health";

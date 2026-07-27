@@ -585,4 +585,52 @@ describe("reliable notification delivery", () => {
       (error) => error.status === 400
     );
   });
+
+  it("delivers a WeCom target resolved by cf-auth without persisting its user ID", async () => {
+    const env = {
+      ...makeEnv(),
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async authorizeNotificationEvent(input) {
+          return {
+            ...input,
+            enabled: true,
+            channels: [{ channel: "wecom", available: true, enabled: true }]
+          };
+        },
+        async resolveNotificationTargets() {
+          return {
+            decisionVersion: "wecom-policy-1",
+            targets: [{
+              channel: "wecom",
+              bindingId: "nb_wecom_private",
+              address: "sensitive-wecom-user-id"
+            }]
+          };
+        }
+      }
+    };
+    const event = await createEvent(env, {}, "wecom:event");
+    await dispatchEvent(env, event.eventId);
+    const [delivery] = await listEventDeliveries(env.db, event.eventId);
+    let target;
+    await deliverNotification(env, delivery.id, {
+      async sendWecom(_runtime, input) {
+        target = input.userId;
+        return { ok: true, providerMsgId: "wecom-provider-1" };
+      }
+    });
+
+    assert.equal(target, "sensitive-wecom-user-id");
+    const storedEvent = await env.db
+      .prepare("SELECT * FROM notification_events WHERE id = ?")
+      .bind(event.eventId)
+      .first();
+    const storedDelivery = await env.db
+      .prepare("SELECT * FROM notification_deliveries WHERE id = ?")
+      .bind(delivery.id)
+      .first();
+    assert.doesNotMatch(JSON.stringify({ storedEvent, storedDelivery }), /sensitive-wecom-user-id/);
+    assert.equal(storedDelivery.status, "sent");
+  });
 });

@@ -18,6 +18,14 @@ import {
   verifyWechatAesSignature,
   verifyWechatSignature
 } from "./channels/wechat-callback.mjs";
+import {
+  claimWecomCallback,
+  decryptWecomPayload,
+  handleWecomMessage,
+  isFreshWecomTimestamp,
+  releaseWecomCallback,
+  verifyWecomSignature
+} from "./channels/wecom-callback.mjs";
 import { bearerToken, HttpError, json, readJson, readText, requireFields, routeParts } from "./http.mjs";
 import { assertBindCodeAllowed } from "./rate-limit.mjs";
 import { listLogs, retryFailedLogs, sendNotification } from "./send.mjs";
@@ -64,6 +72,9 @@ export function createAppHandler(env) {
 
       if (parts[0] === "wechat" && parts[1] === "callback") {
         return await handleWechatCallback(request, env, url);
+      }
+      if (parts[0] === "wecom" && parts[1] === "callback") {
+        return await handleWecomCallback(request, env, url);
       }
 
       if (parts[0] === "api") {
@@ -151,6 +162,67 @@ async function handleWechatCallback(request, env, url) {
       return new Response("success", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
     return handleWechatMessage(env, xml);
+  }
+  throw new HttpError(405, "method not allowed");
+}
+
+async function handleWecomCallback(request, env, url) {
+  const token = env.WECOM_CALLBACK_TOKEN || "";
+  if (!token || !env.WECOM_ENCODING_AES_KEY || !env.WECOM_CORP_ID) {
+    throw new HttpError(503, "WeCom callback is not configured");
+  }
+  const timestamp = url.searchParams.get("timestamp") || "";
+  const nonce = url.searchParams.get("nonce") || "";
+  const signature = url.searchParams.get("msg_signature") || "";
+  const maxSkewSec = Number(env.WECOM_CALLBACK_MAX_SKEW_SEC || 300);
+  if (!isFreshWecomTimestamp(timestamp, { maxSkewSec })) {
+    return new Response("stale timestamp", { status: 403 });
+  }
+  if (request.method === "GET") {
+    const echo = url.searchParams.get("echostr") || "";
+    if (!await verifyWecomSignature(token, {
+      msgSignature: signature,
+      timestamp,
+      nonce,
+      encrypt: echo
+    })) {
+      return new Response("invalid signature", { status: 403 });
+    }
+    return new Response(await decryptWecomPayload(echo, env), {
+      headers: { "Content-Type": "text/plain; charset=utf-8" }
+    });
+  }
+  if (request.method === "POST") {
+    const xml = await readText(request, { maxBytes: 128 * 1024 });
+    const encrypt = parseWechatXml(xml).Encrypt;
+    if (!await verifyWecomSignature(token, {
+      msgSignature: signature,
+      timestamp,
+      nonce,
+      encrypt
+    })) {
+      return new Response("invalid signature", { status: 403 });
+    }
+    const receipt = { signature, timestamp, nonce, body: xml };
+    if (!await claimWecomCallback(env.db, receipt)) {
+      return new Response("success");
+    }
+    try {
+      return await handleWecomMessage(env, xml);
+    } catch (error) {
+      const retryable = !(error instanceof HttpError) || error.status >= 500;
+      if (retryable) {
+        try {
+          await releaseWecomCallback(env.db, receipt);
+        } catch (releaseError) {
+          console.error(JSON.stringify({
+            event: "wecom_callback_receipt_release_failed",
+            error: String(releaseError?.message || releaseError).slice(0, 300)
+          }));
+        }
+      }
+      throw error;
+    }
   }
   throw new HttpError(405, "method not allowed");
 }
@@ -252,12 +324,20 @@ async function handleApi(request, env, parts, url) {
       if (block) throw new HttpError(block.status, block.error, { retryAfterSec: block.retryAfterSec });
       const input = await readJson(request);
       const channel = input.channel || "wechat_oa";
-      if (channel !== "wechat_oa") throw new HttpError(400, "only wechat_oa supported in Phase 1");
+      if (!["wechat_oa", "wecom"].includes(channel)) {
+        throw new HttpError(400, "notification channel is not supported");
+      }
+      if (channel === "wecom" && !usesNotificationDirectoryRpc(env)) {
+        throw new HttpError(409, "WeCom binding requires cf-auth notification directory RPC");
+      }
       if (usesNotificationDirectoryRpc(env)) {
+        const providerAccountId = channel === "wecom"
+          ? env.WECOM_PROVIDER_ACCOUNT_ID || "wecom-main"
+          : env.WECHAT_PROVIDER_ACCOUNT_ID || env.WECHAT_APP_ID || "default";
         const challenge = await createDirectoryBindingChallenge(env, {
           userId: user.id,
           channel,
-          providerAccountId: env.WECHAT_PROVIDER_ACCOUNT_ID || env.WECHAT_APP_ID || "default",
+          providerAccountId,
           purpose: "bind",
           context: { initiatedBy: "cf_notify_account_center" }
         });
@@ -265,8 +345,10 @@ async function handleApi(request, env, parts, url) {
           code: challenge.token,
           expiresAt: challenge.expiresAt,
           expireIn: challenge.expireIn,
-          qrcodeUrl: env.WECHAT_QRCODE_URL || null,
-          hint: `请关注公众号后发送绑定码：${challenge.token}`
+          qrcodeUrl: channel === "wecom" ? env.WECOM_APP_URL || null : env.WECHAT_QRCODE_URL || null,
+          hint: channel === "wecom"
+            ? `请在企业微信应用中发送绑定码：${challenge.token}`
+            : `请关注公众号后发送绑定码：${challenge.token}`
         });
       }
       const result = await createBindCode(

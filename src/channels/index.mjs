@@ -1,5 +1,6 @@
 import { getChannelApp, resolveTemplate } from "../templates.mjs";
 import { sendTelegram } from "./telegram-send.mjs";
+import { sendWecomApplicationMessage } from "./wecom-send.mjs";
 import { sendWechatCustomText, sendWechatTemplate } from "./wechat-send.mjs";
 
 function normalizeFailure(result, fallbackCode) {
@@ -43,6 +44,21 @@ export async function deliverToChannel(env, { channel, binding, event, payload }
     return result?.ok
       ? { ok: true, providerMsgId: result.providerMsgId || null }
       : normalizeFailure(result, "wechat_send_failed");
+  }
+
+  if (channel === "wecom") {
+    const send = deps.sendWecom || sendWecomApplicationMessage;
+    const fallback = typeof payload.data?.message === "string" ? payload.data.message : "";
+    const result = await send(env, {
+      userId: binding.externalId,
+      title: payload.title || "通知",
+      body: payload.body || fallback,
+      url: payload.url || null,
+      deliveryId: event.deliveryId
+    });
+    return result?.ok
+      ? { ok: true, providerMsgId: result.providerMsgId || null }
+      : normalizeFailure(result, "wecom_send_failed");
   }
 
   if (channel === "telegram") {

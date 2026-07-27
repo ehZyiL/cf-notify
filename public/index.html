@@ -13,7 +13,7 @@
     <div class="gate-card">
       <p class="eyebrow">cf-notify</p>
       <h1>通知中心</h1>
-      <p class="muted" style="margin-bottom:18px">绑定微信公众号后，可接收业务系统推送的通知。请使用 cf-auth 登录后获取的 JWT，或开发环境测试 Token。</p>
+      <p class="muted" style="margin-bottom:18px">绑定微信公众号或企业微信后，可接收业务系统推送的通知。请使用 cf-auth 登录后获取的 JWT，或开发环境测试 Token。</p>
       <label class="field">
         <span>用户 JWT</span>
         <textarea id="jwt-input" placeholder="粘贴 Bearer Token（无需写 Bearer 前缀）"></textarea>
@@ -44,10 +44,15 @@
       <section class="card">
         <div class="card-head">
           <div>
-            <p class="eyebrow">WeChat</p>
-            <h2>公众号通知绑定</h2>
+            <p class="eyebrow" id="bind-eyebrow">WeChat</p>
+            <h2 id="bind-heading">公众号通知绑定</h2>
           </div>
           <span id="bind-badge" class="badge badge-muted">未绑定</span>
+        </div>
+
+        <div class="channel-switch" role="group" aria-label="通知通道">
+          <button class="channel-option active" type="button" data-bind-channel="wechat_oa">微信公众号</button>
+          <button class="channel-option" type="button" data-bind-channel="wecom">企业微信</button>
         </div>
 
         <div class="hero-status">
@@ -58,7 +63,7 @@
         <div id="bound-panel" hidden>
           <div class="item">
             <div class="item-row">
-              <p class="item-title">微信账号</p>
+              <p class="item-title" id="bound-account-title">微信账号</p>
               <span class="badge badge-ok">已验证</span>
             </div>
             <div class="item-meta mono" id="bound-openid">—</div>
@@ -72,8 +77,8 @@
         <div id="bind-flow">
           <ol class="steps">
             <li>点击下方按钮生成一次性绑定码（5 分钟内有效）。</li>
-            <li>使用微信扫描 / 关注公众号。</li>
-            <li>将绑定码原样发送给公众号，等待本页状态变为「已绑定」。</li>
+            <li id="bind-step-open">使用微信扫描 / 关注公众号。</li>
+            <li id="bind-step-send">将绑定码原样发送给公众号，等待本页状态变为「已绑定」。</li>
           </ol>
           <div class="bind-code-panel">
             <div class="muted" style="font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase">绑定码</div>

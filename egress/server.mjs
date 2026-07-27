@@ -13,11 +13,17 @@
 
 import http from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { createWecomClient } from "./wecom-client.mjs";
 
 const PORT = Number(process.env.PORT || 8789);
 const APP_ID = process.env.WECHAT_APP_ID || "";
 const APP_SECRET = process.env.WECHAT_APP_SECRET || "";
 const SHARED = process.env.EGRESS_SHARED_SECRET || "";
+const WECOM_CLIENT = createWecomClient({
+  corpId: process.env.WECOM_CORP_ID || "",
+  appSecret: process.env.WECOM_APP_SECRET || "",
+  agentId: process.env.WECOM_AGENT_ID || ""
+});
 
 let tokenCache = { accessToken: null, expiresAt: 0 };
 const MAX_BODY_BYTES = 64 * 1024;
@@ -191,6 +197,37 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, e?.statusCode || 500, {
         ok: false,
         error: e && e.message ? e.message : String(e),
+        ...(e?.errcode != null ? { errcode: e.errcode } : {})
+      });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/wecom/app/send") {
+    let targetHash = null;
+    try {
+      const raw = await readBody(req);
+      const input = JSON.parse(raw || "{}");
+      targetHash = targetFingerprint(input.userId);
+      const result = await WECOM_CLIENT.sendApplicationMessage(input);
+      console.log(JSON.stringify({
+        event: "wecom_app_send",
+        deliveryId: req.headers["x-delivery-id"] || null,
+        targetHash,
+        ok: true
+      }));
+      return sendJson(res, 200, { ok: true, msgid: result.msgid || null });
+    } catch (e) {
+      console.error(JSON.stringify({
+        event: "wecom_app_send",
+        deliveryId: req.headers["x-delivery-id"] || null,
+        targetHash,
+        ok: false,
+        errcode: e?.errcode ?? null,
+        error: String(e?.message || e).slice(0, 300)
+      }));
+      return sendJson(res, e?.statusCode || 500, {
+        ok: false,
+        error: e?.message || String(e),
         ...(e?.errcode != null ? { errcode: e.errcode } : {})
       });
     }

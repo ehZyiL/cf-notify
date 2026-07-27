@@ -352,3 +352,19 @@ describe("S6 HTTP entry", () => {
     assert.equal(calls[0][1].providerAccountId, "wechat-main");
   });
 });
+
+describe("notification portal assets", () => {
+  it("offers both WeChat notification channels", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const [html, script] = await Promise.all([
+      readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+      readFile(new URL("../public/me.js", import.meta.url), "utf8")
+    ]);
+
+    assert.match(html, /data-bind-channel="wechat_oa"/);
+    assert.match(html, /data-bind-channel="wecom"/);
+    assert.match(script, /企业微信通知绑定/);
+    assert.match(script, /currentChannel: "wechat_oa"/);
+    assert.match(script, /channel: state\.currentChannel/);
+  });
+});

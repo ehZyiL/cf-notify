@@ -8,7 +8,35 @@ const state = {
   subscriptions: [],
   logs: [],
   pollTimer: null,
-  currentCode: null
+  currentCode: null,
+  currentChannel: "wechat_oa"
+};
+
+const CHANNELS = {
+  wechat_oa: {
+    eyebrow: "WeChat",
+    heading: "公众号通知绑定",
+    account: "微信账号",
+    emptyTitle: "尚未绑定公众号",
+    emptySub: "绑定后，业务系统可将通知送达您的微信。",
+    readyTitle: "公众号通知已就绪",
+    readySub: "系统可通过公众号向您推送任务结果与重要提醒。",
+    openStep: "使用微信扫描 / 关注公众号。",
+    sendStep: "将绑定码原样发送给公众号，等待本页状态变为「已绑定」。",
+    destination: "公众号"
+  },
+  wecom: {
+    eyebrow: "WeCom",
+    heading: "企业微信通知绑定",
+    account: "企业微信账号",
+    emptyTitle: "尚未绑定企业微信",
+    emptySub: "绑定后，业务系统可通过企业微信应用向您推送通知。",
+    readyTitle: "企业微信通知已就绪",
+    readySub: "系统可通过企业微信应用向您推送任务结果与重要提醒。",
+    openStep: "打开企业微信中的通知应用。",
+    sendStep: "将绑定码原样发送给应用，等待本页状态变为「已绑定」。",
+    destination: "企业微信应用"
+  }
 };
 
 const $ = (id) => document.getElementById(id);
@@ -79,23 +107,34 @@ function stopPoll() {
 }
 
 function renderBindings() {
-  const wechat = state.bindings.find((b) => b.channel === "wechat_oa" && b.status === "verified");
-  if (wechat) {
+  const config = CHANNELS[state.currentChannel];
+  const binding = state.bindings.find(
+    (item) => item.channel === state.currentChannel && item.status === "verified"
+  );
+  $("bind-eyebrow").textContent = config.eyebrow;
+  $("bind-heading").textContent = config.heading;
+  $("bound-account-title").textContent = config.account;
+  $("bind-step-open").textContent = config.openStep;
+  $("bind-step-send").textContent = config.sendStep;
+  document.querySelectorAll("[data-bind-channel]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.bindChannel === state.currentChannel);
+  });
+  if (binding) {
     $("bind-badge").textContent = "已绑定";
     $("bind-badge").className = "badge badge-ok";
-    $("bind-hero-title").textContent = "微信通知已就绪";
-    $("bind-hero-sub").textContent = "系统可通过公众号向您推送任务结果与重要提醒。";
+    $("bind-hero-title").textContent = config.readyTitle;
+    $("bind-hero-sub").textContent = config.readySub;
     $("bound-panel").hidden = false;
     $("bind-flow").hidden = true;
-    $("bound-openid").textContent = wechat.maskedLabel || "已验证";
-    $("bound-time").textContent = wechat.verifiedAt
-      ? `绑定时间 ${new Date(wechat.verifiedAt).toLocaleString("zh-CN")}`
+    $("bound-openid").textContent = binding.maskedLabel || "已验证";
+    $("bound-time").textContent = binding.verifiedAt
+      ? `绑定时间 ${new Date(binding.verifiedAt).toLocaleString("zh-CN")}`
       : "";
   } else {
     $("bind-badge").textContent = "未绑定";
     $("bind-badge").className = "badge badge-muted";
-    $("bind-hero-title").textContent = "尚未绑定微信";
-    $("bind-hero-sub").textContent = "绑定后，业务系统可将通知送达您的微信。";
+    $("bind-hero-title").textContent = config.emptyTitle;
+    $("bind-hero-sub").textContent = config.emptySub;
     $("bound-panel").hidden = true;
     $("bind-flow").hidden = false;
   }
@@ -162,7 +201,7 @@ function escapeHtml(v) {
 async function loadAll() {
   const [bindings, subs, logs] = await Promise.all([
     api("/api/bindings"),
-    api("/api/subscriptions"),
+    api("/api/subscriptions").catch(() => ({ subscriptions: [] })),
     api("/api/logs?limit=20")
   ]);
   state.bindings = bindings.bindings || [];
@@ -218,16 +257,30 @@ $("btn-logout").onclick = () => {
 
 $("btn-refresh").onclick = () => loadAll().then(() => toast("已刷新", "ok")).catch((e) => toast(e.message, "err"));
 
+document.querySelectorAll("[data-bind-channel]").forEach((button) => {
+  button.onclick = () => {
+    stopPoll();
+    state.currentChannel = button.dataset.bindChannel;
+    state.currentCode = null;
+    $("bind-code").textContent = "······";
+    $("bind-hint").textContent = "点击生成后显示";
+    $("bind-status").textContent = "";
+    $("btn-copy-code").disabled = true;
+    renderBindings();
+  };
+});
+
 $("btn-gen-code").onclick = async () => {
   try {
     stopPoll();
     const data = await api("/api/bindings/code", {
       method: "POST",
-      body: JSON.stringify({ channel: "wechat_oa" })
+      body: JSON.stringify({ channel: state.currentChannel })
     });
     state.currentCode = data.code;
     $("bind-code").textContent = data.code;
-    $("bind-hint").textContent = data.hint || `请在 ${data.expireIn || 300}s 内发送给公众号`;
+    $("bind-hint").textContent = data.hint
+      || `请在 ${data.expireIn || 300}s 内发送给${CHANNELS[state.currentChannel].destination}`;
     $("btn-copy-code").disabled = false;
     $("bind-status").textContent = "等待公众号确认…";
     state.pollTimer = setInterval(async () => {
@@ -259,11 +312,14 @@ $("btn-copy-code").onclick = async () => {
 };
 
 $("btn-unbind").onclick = async () => {
-  const wechat = state.bindings.find((b) => b.channel === "wechat_oa" && b.status === "verified");
-  if (!wechat) return;
-  if (!confirm("确定解除微信绑定？之后将无法收到公众号通知。")) return;
+  const binding = state.bindings.find(
+    (item) => item.channel === state.currentChannel && item.status === "verified"
+  );
+  if (!binding) return;
+  const config = CHANNELS[state.currentChannel];
+  if (!confirm(`确定解除${config.heading.replace("通知绑定", "")}绑定？`)) return;
   try {
-    await api(`/api/bindings/${encodeURIComponent(wechat.id)}`, { method: "DELETE" });
+    await api(`/api/bindings/${encodeURIComponent(binding.id)}`, { method: "DELETE" });
     toast("已解绑", "ok");
     await loadAll();
   } catch (e) {

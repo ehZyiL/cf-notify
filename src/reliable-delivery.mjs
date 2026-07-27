@@ -8,7 +8,10 @@ import {
 
 const EVENT_TERMINAL = new Set(["completed", "partially_failed", "skipped", "failed"]);
 const DELIVERY_TERMINAL = new Set(["sent", "delivered", "unknown", "failed", "skipped"]);
-const FORBIDDEN_TARGET_FIELDS = new Set(["to", "email", "phone", "openid", "chatid", "devicetoken"]);
+const FORBIDDEN_TARGET_FIELDS = new Set([
+  "to", "email", "phone", "openid", "chatid", "devicetoken",
+  "touser", "toparty", "totag", "agentid", "wecomuserid"
+]);
 const FORBIDDEN_INPUT_FIELDS = new Set([
   "html",
   "rawhtml",
@@ -24,6 +27,11 @@ const FORBIDDEN_DATA_FIELDS = new Set([
   "openid",
   "chatid",
   "devicetoken",
+  "touser",
+  "toparty",
+  "totag",
+  "agentid",
+  "wecomuserid",
   "template",
   "templateid",
   "html",
@@ -31,7 +39,7 @@ const FORBIDDEN_DATA_FIELDS = new Set([
   "bodyhtml",
   "providertemplateid"
 ]);
-const SUPPORTED_CHANNELS = new Set(["wechat_oa", "telegram"]);
+const SUPPORTED_CHANNELS = new Set(["wechat_oa", "wecom", "telegram"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -779,6 +787,10 @@ export async function reconcileQueues(env, options = {}) {
   challengesDeleted = Number(cleanup?.meta?.changes || 0);
   await env.db
     .prepare("DELETE FROM wechat_callback_receipts WHERE received_at < ?")
+    .bind(Date.now() - 24 * 60 * 60 * 1000)
+    .run();
+  await env.db
+    .prepare("DELETE FROM wecom_callback_receipts WHERE received_at < ?")
     .bind(Date.now() - 24 * 60 * 60 * 1000)
     .run();
   console.log(JSON.stringify({
