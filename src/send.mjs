@@ -1,5 +1,5 @@
 import { getVerifiedBinding } from "./bindings.mjs";
-import { sendWechatTemplate } from "./channels/wechat-send.mjs";
+import { sendWechatCustomText, sendWechatTemplate } from "./channels/wechat-send.mjs";
 import { sendTelegram } from "./channels/telegram-send.mjs";
 import { isSubscribed } from "./subscriptions.mjs";
 import { getChannelApp, resolveTemplate } from "./templates.mjs";
@@ -144,21 +144,32 @@ async function sendWechatChannel(env, ctx) {
     return { channel: "wechat_oa", status: "skipped", error: "not_bound", logId };
   }
 
-  const app = await getChannelApp(env.db, "wechat_oa");
-  const resolved = resolveTemplate(app?.templateMapJson, ctx.eventType, {
-    title: ctx.title,
-    body: ctx.body,
-    data: ctx.data
-  });
-  const templateId = resolved.templateId || env.WECHAT_DEFAULT_TEMPLATE_ID || "DEFAULT_TEMPLATE";
-
-  const sendFn = ctx.sendWechat || sendWechatTemplate;
-  const sent = await sendFn(env, {
-    openid: binding.externalId,
-    templateId,
-    data: resolved.templateData,
-    url: ctx.linkUrl
-  });
+  const customText = String(env.WECHAT_SEND_MODE || "template").toLowerCase() === "custom_text";
+  let args;
+  let sendFn;
+  if (customText) {
+    const fallback = typeof ctx.data?.message === "string" ? ctx.data.message : "";
+    args = {
+      openid: binding.externalId,
+      text: [ctx.title, ctx.body || fallback, ctx.linkUrl].filter(Boolean).join("\n")
+    };
+    sendFn = ctx.sendWechat || sendWechatCustomText;
+  } else {
+    const app = await getChannelApp(env.db, "wechat_oa");
+    const resolved = resolveTemplate(app?.templateMapJson, ctx.eventType, {
+      title: ctx.title,
+      body: ctx.body,
+      data: ctx.data
+    });
+    args = {
+      openid: binding.externalId,
+      templateId: resolved.templateId || env.WECHAT_DEFAULT_TEMPLATE_ID || "DEFAULT_TEMPLATE",
+      data: resolved.templateData,
+      url: ctx.linkUrl
+    };
+    sendFn = ctx.sendWechat || sendWechatTemplate;
+  }
+  const sent = await sendFn(env, args);
 
   if (!sent.ok) {
     const logId = await writeLog(env.db, {

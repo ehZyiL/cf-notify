@@ -271,7 +271,8 @@ export async function ingestNotificationEvent(env, input, client, idempotencyKey
   await authorizeNotificationEvent(env, {
     serviceId: client.serviceId,
     userId: normalized.userId,
-    eventType: normalized.eventType
+    eventType: normalized.eventType,
+    data: normalized.payload.data
   });
 
   const id = `evt_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -349,16 +350,36 @@ async function enqueueEvent(env, eventId) {
   }
 }
 
-async function createDelivery(db, { eventId, channel, bindingId, targetKey, status, errorCode }) {
+async function createDelivery(db, {
+  eventId,
+  channel,
+  bindingId,
+  targetKey,
+  status,
+  errorCode,
+  nextAttemptAt = null
+}) {
   const id = `dlv_${crypto.randomUUID().replace(/-/g, "")}`;
   const now = nowIso();
   await db
     .prepare(
       `INSERT OR IGNORE INTO notification_deliveries
-       (id, event_id, channel, binding_id, target_key, status, error_code, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, event_id, channel, binding_id, target_key, status, error_code,
+        next_attempt_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, eventId, channel, bindingId, targetKey, status, errorCode || null, now, now)
+    .bind(
+      id,
+      eventId,
+      channel,
+      bindingId,
+      targetKey,
+      status,
+      errorCode || null,
+      nextAttemptAt,
+      now,
+      now
+    )
     .run();
   const row = await db
     .prepare(
@@ -373,10 +394,17 @@ async function createDelivery(db, { eventId, channel, bindingId, targetKey, stat
   return deliveryFromRow(row);
 }
 
-async function enqueueDelivery(env, deliveryId) {
+function queueDelaySeconds(notBefore) {
+  const delay = Math.ceil((Date.parse(notBefore || "") - Date.now()) / 1000);
+  return Number.isFinite(delay) && delay > 0 ? Math.min(12 * 60 * 60, delay) : 0;
+}
+
+async function enqueueDelivery(env, deliveryId, options = {}) {
   const now = nowIso();
   try {
-    await env.deliveryQueue.send({ deliveryId });
+    const delaySeconds = queueDelaySeconds(options.notBefore);
+    if (delaySeconds) await env.deliveryQueue.send({ deliveryId }, { delaySeconds });
+    else await env.deliveryQueue.send({ deliveryId });
     await env.db
       .prepare(
         `UPDATE notification_deliveries
@@ -433,10 +461,13 @@ export async function dispatchEvent(env, eventId) {
       channel: target.channel,
       bindingId: target.bindingId,
       targetKey: target.bindingId,
-      status: "pending"
+      status: "pending",
+      nextAttemptAt: resolution.deferUntil || null
     });
     if (!DELIVERY_TERMINAL.has(delivery.status)) {
-      const queued = await enqueueDelivery(env, delivery.id);
+      const queued = await enqueueDelivery(env, delivery.id, {
+        notBefore: resolution.deferUntil
+      });
       if (!queued) enqueueFailed = true;
     }
   }
@@ -490,6 +521,18 @@ export async function deliverNotification(env, deliveryId, deps = {}) {
   if (!target) {
     await markDeliverySkipped(env.db, delivery, resolution.skipReason || "binding_changed");
     return { terminal: true };
+  }
+  const quietDelaySeconds = queueDelaySeconds(resolution.deferUntil);
+  if (quietDelaySeconds) {
+    await env.db
+      .prepare(
+        `UPDATE notification_deliveries
+         SET next_attempt_at = ?, updated_at = ?
+         WHERE id = ? AND status IN ('pending', 'retrying')`
+      )
+      .bind(resolution.deferUntil, nowIso(), delivery.id)
+      .run();
+    return { terminal: false, retry: true, delaySeconds: quietDelaySeconds };
   }
   const binding = {
     id: target.bindingId,

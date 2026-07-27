@@ -297,4 +297,58 @@ describe("S6 HTTP entry", () => {
       }]
     ]);
   });
+
+  it("proxies legacy binding UI operations to cf-auth in RPC mode", async () => {
+    const calls = [];
+    const env = makeEnv({
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      WECHAT_PROVIDER_ACCOUNT_ID: "wechat-main",
+      authService: {
+        async createBindingChallenge(input) {
+          calls.push(["create", input]);
+          return { token: "ABCD2345", expiresAt: Date.now() + 300000, expireIn: 300 };
+        },
+        async getBindingChallengeStatus(input) {
+          calls.push(["status", input]);
+          return { status: "verified", bindingId: "nb_1" };
+        },
+        async listNotificationBindings(input) {
+          calls.push(["list", input]);
+          return [{
+            id: "nb_1",
+            userId: input.userId,
+            channel: "wechat_oa",
+            providerAccountId: "wechat-main",
+            maskedLabel: "op***1234",
+            status: "verified"
+          }];
+        },
+        async revokeNotificationBinding(input) {
+          calls.push(["revoke", input]);
+          return { ok: true };
+        }
+      }
+    });
+    const handler = createAppHandler(env);
+    const token = await signJwtHs256(
+      { sub: "rpc-user", services: [{ id: "orders" }] },
+      JWT_SECRET,
+      { ttlSeconds: 3600 }
+    );
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const created = await jsonFetch(handler, "/api/bindings/code", {
+      method: "POST",
+      headers,
+      body: { channel: "wechat_oa" }
+    });
+    assert.equal(created.status, 200);
+    assert.equal(created.data.code, "ABCD2345");
+    assert.equal((await jsonFetch(handler, "/api/bindings", { headers })).data.bindings[0].maskedLabel, "op***1234");
+    assert.equal((await jsonFetch(handler, "/api/bindings/status?code=ABCD2345", { headers })).data.status, "verified");
+    assert.equal((await jsonFetch(handler, "/api/bindings/nb_1", { method: "DELETE", headers })).status, 200);
+    assert.equal((await jsonFetch(handler, "/api/subscriptions", { headers })).status, 409);
+    assert.deepEqual(calls.map(([name]) => name), ["create", "list", "status", "revoke"]);
+    assert.equal(calls[0][1].providerAccountId, "wechat-main");
+  });
 });

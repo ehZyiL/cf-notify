@@ -29,7 +29,7 @@ async function readLimitedText(response) {
   return text + decoder.decode();
 }
 
-export async function sendWechatTemplate(env, { openid, templateId, data, url, deliveryId }) {
+async function sendWechatEgress(env, { path, payload, deliveryId }) {
   const base = String(env.EGRESS_BASE_URL || "").replace(/\/+$/, "");
   if (!base) {
     return { ok: false, error: "EGRESS_BASE_URL is not configured" };
@@ -38,7 +38,7 @@ export async function sendWechatTemplate(env, { openid, templateId, data, url, d
     return { ok: false, error: "EGRESS_SHARED_SECRET is not configured" };
   }
 
-  const endpoint = `${base}/wechat/template/send`;
+  const endpoint = `${base}${path}`;
   let res;
   try {
     res = await fetch(endpoint, {
@@ -50,12 +50,7 @@ export async function sendWechatTemplate(env, { openid, templateId, data, url, d
         ...(deliveryId ? { "X-Delivery-Id": deliveryId } : {})
       },
       signal: AbortSignal.timeout(Number(env.EGRESS_TIMEOUT_MS || 10_000)),
-      body: JSON.stringify({
-        openid,
-        template_id: templateId,
-        data: data || {},
-        url: url || undefined
-      })
+      body: JSON.stringify(payload)
     });
   } catch (e) {
     return {
@@ -102,4 +97,35 @@ export async function sendWechatTemplate(env, { openid, templateId, data, url, d
     ok: true,
     providerMsgId: body.msgid || body.msg_id || body.data?.msgid || null
   };
+}
+
+export async function sendWechatTemplate(env, { openid, templateId, data, url, deliveryId }) {
+  return sendWechatEgress(env, {
+    path: "/wechat/template/send",
+    deliveryId,
+    payload: {
+      openid,
+      template_id: templateId,
+      data: data || {},
+      url: url || undefined
+    }
+  });
+}
+
+export async function sendWechatCustomText(env, { openid, text, deliveryId }) {
+  const content = String(text || "").trim().slice(0, 2000);
+  if (!content) {
+    return {
+      ok: false,
+      retryable: false,
+      outcomeUnknown: false,
+      errorCode: "wechat_text_empty",
+      error: "WeChat text content is empty"
+    };
+  }
+  return sendWechatEgress(env, {
+    path: "/wechat/custom/send",
+    deliveryId,
+    payload: { openid, text: content }
+  });
 }

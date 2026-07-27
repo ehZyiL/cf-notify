@@ -64,17 +64,20 @@ WECHAT_AES_KEY=                # 可选，安全模式 43 字符
 WECHAT_APP_ID=
 EGRESS_BASE_URL=http://127.0.0.1:8789
 EGRESS_SHARED_SECRET=...
+WECHAT_SEND_MODE=custom_text
 ADMIN_BOOTSTRAP_KEY=dev-admin
 ALLOW_TEST_TOKEN=true
 WECHAT_CODE_LOGIN_ENABLED=false
 NOTIFICATION_DIRECTORY_MODE=local # cf-auth RPC 上线且完成数据迁移后改为 rpc
 ```
 
+未认证公众号使用 `WECHAT_SEND_MODE=custom_text`，通过客服消息接口发送纯文本，用户必须在微信允许的互动窗口内。公众号认证并配置模板后，可切回 `template` 并维护 `channel_apps` 模板映射。
+
 生产用户 JWT 使用 `CF_AUTH` Service Binding 获取 cf-auth RS256 JWKS，不共享私钥或 HMAC secret。`CF_AUTH_ISSUER`、Service Binding、Queue 和 D1/KV binding 在 `wrangler.toml` 中声明。
 
 生产配置默认 `SUBSCRIPTIONS_DEFAULT_OPEN=false`：用户必须先为对应 service/event 建立订阅，业务才能投递。用户创建订阅时还会校验 cf-auth JWT 中的 `services`。
 
-当前生产保持 `NOTIFICATION_DIRECTORY_MODE=local`，继续使用已上线的本地 Service Client、binding 和 subscription。代码已支持切换为 `rpc`：业务 API Key 由 `CF_AUTH.verifyServiceApiKey()` 验证，通知受理查询有效设置，Dispatch 和 Delivery 各自调用 `resolveNotificationTargets()`，微信绑定/取消关注分别调用 `consumeBindingChallenge()` / `updateBindingStatus()`。RPC 故障不会降级读取本地权威数据。
+当前生产使用 `NOTIFICATION_DIRECTORY_MODE=rpc`：业务 API Key 由 `CF_AUTH.verifyServiceApiKey()` 验证，通知受理查询有效设置，Dispatch 和 Delivery 各自调用 `resolveNotificationTargets()`，微信绑定/取消关注分别调用 `consumeBindingChallenge()` / `updateBindingStatus()`。RPC 故障不会降级读取本地权威数据。
 
 切换前必须先在 cf-auth 部署对应命名 RPC、迁移绑定/偏好/事件目录，并完成契约测试。RPC 返回的明文地址只存在于当前调用内存，不写入 cf-notify D1、Queue 或响应。`CF_AUTH` 的命名 entrypoint 配置应与 cf-auth 最终导出名称一起变更，不能提前修改已上线 binding。
 

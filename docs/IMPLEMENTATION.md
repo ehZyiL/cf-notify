@@ -360,6 +360,7 @@ notify:
 | `ENFORCE_USER_SERVICE_MEMBERSHIP` | 生产默认 `true` |
 | `NOTIFICATION_DIRECTORY_MODE` | `local` 保持 Phase 1；cf-auth RPC 和数据迁移完成后切换为 `rpc` |
 | `WECHAT_PROVIDER_ACCOUNT_ID` | RPC 模式的公众号发送主体 ID；未设时回退 `WECHAT_APP_ID` |
+| `WECHAT_SEND_MODE` | `custom_text` 使用客服文本消息；认证公众号可设为 `template` |
 | `WECHAT_CALLBACK_MAX_SKEW_SEC` | 回调时间窗，默认 300 |
 | `EGRESS_TIMEOUT_MS` | egress 超时，默认 10000 |
 

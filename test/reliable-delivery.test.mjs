@@ -20,12 +20,14 @@ import { upsertSubscription } from "../src/subscriptions.mjs";
 class MemoryQueue {
   constructor() {
     this.messages = [];
+    this.options = [];
     this.error = null;
   }
 
-  async send(body) {
+  async send(body, options) {
     if (this.error) throw this.error;
     this.messages.push(body);
+    this.options.push(options || null);
   }
 }
 
@@ -382,7 +384,7 @@ describe("reliable notification delivery", () => {
       ...makeEnv(),
       NOTIFICATION_DIRECTORY_MODE: "rpc",
       authService: {
-        async getEffectiveNotificationSettings(input) {
+        async authorizeNotificationEvent(input) {
           directoryCalls.push({ method: "settings", input });
           return {
             userId: input.userId,
@@ -438,13 +440,57 @@ describe("reliable notification delivery", () => {
     assert.equal(directoryCalls.filter((call) => call.method === "targets").length, 2);
   });
 
+  it("delays WeChat delivery until cf-auth quiet hours end", async () => {
+    const deferUntil = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const env = {
+      ...makeEnv(),
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async authorizeNotificationEvent(input) {
+          return {
+            ...input,
+            enabled: true,
+            channels: [{ channel: "wechat_oa", available: true, enabled: true }]
+          };
+        },
+        async resolveNotificationTargets() {
+          return {
+            decisionVersion: "quiet-policy",
+            deferUntil,
+            targets: [{
+              channel: "wechat_oa",
+              bindingId: "nb_quiet",
+              address: "quiet-openid"
+            }]
+          };
+        }
+      }
+    };
+    const event = await createEvent(env, {}, "quiet:event");
+    await dispatchEvent(env, event.eventId);
+    const [delivery] = await listEventDeliveries(env.db, event.eventId);
+    assert.equal(delivery.nextAttemptAt, deferUntil);
+    assert.ok(env.deliveryQueue.options[0].delaySeconds > 0);
+
+    let adapterCalled = false;
+    const result = await deliverNotification(env, delivery.id, {
+      sendWechat: async () => {
+        adapterCalled = true;
+        return { ok: true };
+      }
+    });
+    assert.equal(adapterCalled, false);
+    assert.equal(result.retry, true);
+    assert.ok(result.delaySeconds > 0);
+  });
+
   it("returns an accepted idempotent replay without re-authorizing the recipient", async () => {
     let settingsCalls = 0;
     const env = {
       ...makeEnv(),
       NOTIFICATION_DIRECTORY_MODE: "rpc",
       authService: {
-        async getEffectiveNotificationSettings(input) {
+        async authorizeNotificationEvent(input) {
           settingsCalls += 1;
           if (settingsCalls > 1) return null;
           return {
@@ -489,7 +535,7 @@ describe("reliable notification delivery", () => {
       ...makeEnv(),
       NOTIFICATION_DIRECTORY_MODE: "rpc",
       authService: {
-        async getEffectiveNotificationSettings(input) {
+        async authorizeNotificationEvent(input) {
           return { ...input, enabled: true, channels: [] };
         },
         async resolveNotificationTargets() {
@@ -529,7 +575,7 @@ describe("reliable notification delivery", () => {
       ...makeEnv(),
       NOTIFICATION_DIRECTORY_MODE: "rpc",
       authService: {
-        async getEffectiveNotificationSettings(input) {
+        async authorizeNotificationEvent(input) {
           return { ...input, enabled: true, channels: [] };
         }
       }

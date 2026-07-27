@@ -21,8 +21,11 @@ node server.mjs
 ## 接口
 
 - `GET /health`
-- `POST /wechat/template/send`  
-  Header: `X-Egress-Key: $EGRESS_SHARED_SECRET`  
+- `POST /wechat/custom/send`
+  Header: `X-Egress-Key: $EGRESS_SHARED_SECRET`
+  Body: `{ openid, text }`
+- `POST /wechat/template/send`
+  Header: `X-Egress-Key: $EGRESS_SHARED_SECRET`
   Body: `{ openid, template_id, data, url? }`
 
 ## 安全

@@ -49,6 +49,27 @@ async function getAccessToken() {
   return tokenCache.accessToken;
 }
 
+async function callWechatApi(path, payload) {
+  const accessToken = await getAccessToken();
+  const response = await fetch(
+    `https://api.weixin.qq.com${path}?access_token=${accessToken}`,
+    {
+      method: "POST",
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }
+  );
+  const data = await response.json();
+  if (data.errcode && data.errcode !== 0) {
+    const error = new Error(data.errmsg || `wechat errcode ${data.errcode}`);
+    error.statusCode = 502;
+    error.errcode = data.errcode;
+    throw error;
+  }
+  return data;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -103,34 +124,45 @@ const server = http.createServer(async (req, res) => {
       if (!openid || !templateId) {
         return sendJson(res, 400, { ok: false, error: "openid and template_id required" });
       }
-      const accessToken = await getAccessToken();
-      const wxRes = await fetch(
-        `https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${accessToken}`,
-        {
-          method: "POST",
-          signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            touser: openid,
-            template_id: templateId,
-            url: input.url || undefined,
-            data: input.data || {}
-          })
-        }
-      );
-      const wxData = await wxRes.json();
-      if (wxData.errcode && wxData.errcode !== 0) {
-        return sendJson(res, 502, {
-          ok: false,
-          error: wxData.errmsg || `wechat errcode ${wxData.errcode}`,
-          errcode: wxData.errcode
-        });
-      }
+      const wxData = await callWechatApi("/cgi-bin/message/template/send", {
+        touser: openid,
+        template_id: templateId,
+        url: input.url || undefined,
+        data: input.data || {}
+      });
       return sendJson(res, 200, { ok: true, msgid: wxData.msgid });
     } catch (e) {
       return sendJson(res, e?.statusCode || 500, {
         ok: false,
-        error: e && e.message ? e.message : String(e)
+        error: e && e.message ? e.message : String(e),
+        ...(e?.errcode != null ? { errcode: e.errcode } : {})
+      });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/wechat/custom/send") {
+    try {
+      const raw = await readBody(req);
+      const input = JSON.parse(raw || "{}");
+      const openid = String(input.openid || "").trim();
+      const text = String(input.text || "").trim();
+      if (!openid || !text) {
+        return sendJson(res, 400, { ok: false, error: "openid and text required" });
+      }
+      if (text.length > 2000) {
+        return sendJson(res, 400, { ok: false, error: "text is too long" });
+      }
+      const wxData = await callWechatApi("/cgi-bin/message/custom/send", {
+        touser: openid,
+        msgtype: "text",
+        text: { content: text }
+      });
+      return sendJson(res, 200, { ok: true, msgid: wxData.msgid || null });
+    } catch (e) {
+      return sendJson(res, e?.statusCode || 500, {
+        ok: false,
+        error: e && e.message ? e.message : String(e),
+        ...(e?.errcode != null ? { errcode: e.errcode } : {})
       });
     }
   }

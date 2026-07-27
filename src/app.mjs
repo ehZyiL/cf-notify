@@ -35,8 +35,13 @@ import {
   retryFailedDeliveries
 } from "./reliable-delivery.mjs";
 import {
+  createDirectoryBindingChallenge,
+  getDirectoryBindingChallengeStatus,
   getEffectiveNotificationSettings,
-  requireServiceIdentity
+  listDirectoryNotificationBindings,
+  requireServiceIdentity,
+  revokeDirectoryNotificationBinding,
+  usesNotificationDirectoryRpc
 } from "./notification-directory.mjs";
 
 /**
@@ -236,6 +241,9 @@ async function handleApi(request, env, parts, url) {
   if (parts[0] === "bindings") {
     const user = await requireUser(env, request);
     if (!parts[1] && request.method === "GET") {
+      if (usesNotificationDirectoryRpc(env)) {
+        return json({ bindings: await listDirectoryNotificationBindings(env, user.id) });
+      }
       const bindings = await listBindingsForUser(env.db, user.id);
       return json({ bindings: bindings.map(publicBinding) });
     }
@@ -245,6 +253,22 @@ async function handleApi(request, env, parts, url) {
       const input = await readJson(request);
       const channel = input.channel || "wechat_oa";
       if (channel !== "wechat_oa") throw new HttpError(400, "only wechat_oa supported in Phase 1");
+      if (usesNotificationDirectoryRpc(env)) {
+        const challenge = await createDirectoryBindingChallenge(env, {
+          userId: user.id,
+          channel,
+          providerAccountId: env.WECHAT_PROVIDER_ACCOUNT_ID || env.WECHAT_APP_ID || "default",
+          purpose: "bind",
+          context: { initiatedBy: "cf_notify_account_center" }
+        });
+        return json({
+          code: challenge.token,
+          expiresAt: challenge.expiresAt,
+          expireIn: challenge.expireIn,
+          qrcodeUrl: env.WECHAT_QRCODE_URL || null,
+          hint: `请关注公众号后发送绑定码：${challenge.token}`
+        });
+      }
       const result = await createBindCode(
         env.db,
         { userId: user.id, channel, purpose: "wechat_bind" },
@@ -262,6 +286,12 @@ async function handleApi(request, env, parts, url) {
     if (parts[1] === "status" && request.method === "GET") {
       const code = url.searchParams.get("code") || "";
       if (!code) throw new HttpError(400, "code is required");
+      if (usesNotificationDirectoryRpc(env)) {
+        return json(await getDirectoryBindingChallengeStatus(env, {
+          token: code,
+          userId: user.id
+        }));
+      }
       const status = await getBindCodeStatus(env.db, code, { userId: user.id });
       if (status.status === "expired") {
         const bindings = await listBindingsForUser(env.db, user.id);
@@ -271,6 +301,14 @@ async function handleApi(request, env, parts, url) {
       return json(status);
     }
     if (parts[1] && request.method === "DELETE") {
+      if (usesNotificationDirectoryRpc(env)) {
+        const result = await revokeDirectoryNotificationBinding(env, {
+          bindingId: parts[1],
+          userId: user.id
+        });
+        if (!result?.ok) throw new HttpError(404, "binding not found");
+        return json({ ok: true });
+      }
       const ok = await revokeBinding(env.db, parts[1], user.id);
       if (!ok) throw new HttpError(404, "binding not found");
       return json({ ok: true });
@@ -281,6 +319,9 @@ async function handleApi(request, env, parts, url) {
   // Subscriptions
   if (parts[0] === "subscriptions") {
     const user = await requireUser(env, request);
+    if (usesNotificationDirectoryRpc(env)) {
+      throw new HttpError(409, "notification preferences are managed in cf-auth account center");
+    }
     if (!parts[1] && request.method === "GET") {
       return json({ subscriptions: await listSubscriptions(env.db, user.id) });
     }

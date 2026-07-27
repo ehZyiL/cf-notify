@@ -10,11 +10,12 @@ export function usesNotificationDirectoryRpc(env) {
 }
 
 function rpcMethod(env, name) {
-  const method = env.authService?.[name];
+  const service = env.authService;
+  const method = service?.[name];
   if (typeof method !== "function") {
     throw new HttpError(503, "cf-auth notification directory is unavailable");
   }
-  return method.bind(env.authService);
+  return (...args) => service[name](...args);
 }
 
 function normalizeScopes(value) {
@@ -34,7 +35,8 @@ async function callDirectory(env, name, input) {
     console.error(JSON.stringify({
       event: "notification_directory_rpc_failed",
       method: name,
-      errorType: String(error?.name || "Error").slice(0, 100)
+      errorType: String(error?.name || "Error").slice(0, 100),
+      errorMessage: String(error?.message || "RPC call failed").slice(0, 300)
     }));
     throw new HttpError(503, "cf-auth notification directory is unavailable");
   }
@@ -119,7 +121,17 @@ export async function getEffectiveNotificationSettings(env, input) {
 
 export async function authorizeNotificationEvent(env, input) {
   if (!usesNotificationDirectoryRpc(env)) return null;
-  return getEffectiveNotificationSettings(env, input);
+  const normalized = {
+    serviceId: String(input.serviceId || ""),
+    userId: String(input.userId || ""),
+    eventType: String(input.eventType || ""),
+    data: input.data
+  };
+  const result = await callDirectory(env, "authorizeNotificationEvent", normalized);
+  if (result?.error === "invalid_payload") {
+    throw new HttpError(400, String(result.message || "notification payload is invalid").slice(0, 300));
+  }
+  return publicSettings(result, normalized);
 }
 
 function normalizeRpcTargets(result) {
@@ -203,4 +215,21 @@ export async function consumeNotificationBindingChallenge(env, input) {
 
 export async function updateNotificationBindingStatus(env, input) {
   return callDirectory(env, "updateBindingStatus", input);
+}
+
+export async function createDirectoryBindingChallenge(env, input) {
+  return callDirectory(env, "createBindingChallenge", input);
+}
+
+export async function getDirectoryBindingChallengeStatus(env, input) {
+  return callDirectory(env, "getBindingChallengeStatus", input);
+}
+
+export async function listDirectoryNotificationBindings(env, userId) {
+  const result = await callDirectory(env, "listNotificationBindings", { userId });
+  return Array.isArray(result) ? result : [];
+}
+
+export async function revokeDirectoryNotificationBinding(env, input) {
+  return callDirectory(env, "revokeNotificationBinding", input);
 }

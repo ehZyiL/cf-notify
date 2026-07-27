@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createMemoryDb } from "../src/sqlite-d1.mjs";
 import {
+  authorizeNotificationEvent,
   getEffectiveNotificationSettings,
   requireServiceIdentity,
   resolveNotificationTargets
@@ -10,20 +11,24 @@ import {
 describe("cf-auth notification directory", () => {
   it("authenticates cfk API keys through the named RPC entrypoint", async () => {
     const calls = [];
+    const verifyServiceApiKey = new Proxy(async (rawKey) => {
+      calls.push(rawKey);
+      return {
+        valid: true,
+        keyId: "key-1",
+        serviceId: "xy-erp",
+        scopes: ["notifications.settings.read"]
+      };
+    }, {
+      get(target, property, receiver) {
+        if (property === "bind") throw new TypeError("RPC methods do not implement bind");
+        return Reflect.get(target, property, receiver);
+      }
+    });
     const env = {
       db: createMemoryDb(),
       NOTIFICATION_DIRECTORY_MODE: "rpc",
-      authService: {
-        async verifyServiceApiKey(rawKey) {
-          calls.push(rawKey);
-          return {
-            valid: true,
-            keyId: "key-1",
-            serviceId: "xy-erp",
-            scopes: ["notifications.settings.read"]
-          };
-        }
-      }
+      authService: { verifyServiceApiKey }
     };
     const request = new Request("https://notify.example.com/v1/users/u/settings", {
       headers: { Authorization: "Bearer cfk_live_secret" }
@@ -112,6 +117,65 @@ describe("cf-auth notification directory", () => {
       quietHours: { timezone: "Asia/Shanghai", start: "22:00", end: "08:00" },
       version: "v1"
     });
+  });
+
+  it("passes event data to cf-auth for catalog schema validation", async () => {
+    let received;
+    const env = {
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async authorizeNotificationEvent(input) {
+          received = input;
+          return {
+            ok: true,
+            userId: input.userId,
+            serviceId: input.serviceId,
+            eventType: input.eventType,
+            enabled: true,
+            channels: []
+          };
+        }
+      }
+    };
+
+    await authorizeNotificationEvent(env, {
+      serviceId: "xy-erp",
+      userId: "usr_1",
+      eventType: "order.approved",
+      data: { orderNo: "SO-1001" }
+    });
+
+    assert.deepEqual(received, {
+      serviceId: "xy-erp",
+      userId: "usr_1",
+      eventType: "order.approved",
+      data: { orderNo: "SO-1001" }
+    });
+  });
+
+  it("returns catalog payload validation failures as client errors", async () => {
+    const env = {
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async authorizeNotificationEvent() {
+          return {
+            ok: false,
+            error: "invalid_payload",
+            message: "data.orderNo is required"
+          };
+        }
+      }
+    };
+
+    await assert.rejects(
+      () => authorizeNotificationEvent(env, {
+        serviceId: "xy-erp",
+        userId: "usr_1",
+        eventType: "order.approved",
+        data: {}
+      }),
+      (error) => error.status === 400 && /orderNo is required/.test(error.message)
+    );
   });
 
   it("normalizes a recipient removed before delivery into a permanent skip", async () => {
