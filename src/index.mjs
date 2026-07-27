@@ -62,7 +62,9 @@ function createRuntime(env) {
     RECONCILE_AFTER_SEC: env.RECONCILE_AFTER_SEC,
     RECONCILE_BATCH_SIZE: env.RECONCILE_BATCH_SIZE,
     SUBSCRIPTIONS_DEFAULT_OPEN: env.SUBSCRIPTIONS_DEFAULT_OPEN,
-    ENFORCE_USER_SERVICE_MEMBERSHIP: env.ENFORCE_USER_SERVICE_MEMBERSHIP
+    ENFORCE_USER_SERVICE_MEMBERSHIP: env.ENFORCE_USER_SERVICE_MEMBERSHIP,
+    NOTIFICATION_DIRECTORY_MODE: env.NOTIFICATION_DIRECTORY_MODE,
+    WECHAT_PROVIDER_ACCOUNT_ID: env.WECHAT_PROVIDER_ACCOUNT_ID
   };
 }
 
@@ -80,6 +82,7 @@ export default {
 
     const isApi =
       path.startsWith("/api/") ||
+      path.startsWith("/v1/") ||
       path.startsWith("/wechat/") ||
       path === "/health" ||
       path === "/healthz" ||

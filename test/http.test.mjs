@@ -244,4 +244,57 @@ describe("S6 HTTP entry", () => {
     });
     assert.equal(allowed.status, 200);
   });
+
+  it("returns effective notification settings from cf-auth without exposing targets", async () => {
+    const calls = [];
+    const env = makeEnv({
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async verifyServiceApiKey(rawKey) {
+          calls.push(["verify", rawKey]);
+          return {
+            valid: true,
+            keyId: "key-settings",
+            serviceId: "xy-erp",
+            scopes: ["notifications.settings.read"]
+          };
+        },
+        async getEffectiveNotificationSettings(input) {
+          calls.push(["settings", input]);
+          return {
+            ...input,
+            enabled: true,
+            channels: [{
+              channel: "wechat_oa",
+              available: true,
+              enabled: true,
+              maskedTarget: "wx***1234",
+              address: "private-openid"
+            }],
+            version: "v1"
+          };
+        }
+      }
+    });
+    const handler = createAppHandler(env);
+
+    const result = await jsonFetch(
+      handler,
+      "/api/v1/users/usr_1/notification-settings?eventType=order.approved",
+      { headers: { Authorization: "Bearer cfk_settings_secret" } }
+    );
+
+    assert.equal(result.status, 200);
+    assert.equal(result.data.serviceId, "xy-erp");
+    assert.equal(result.data.channels[0].maskedTarget, "wx***1234");
+    assert.equal("address" in result.data.channels[0], false);
+    assert.deepEqual(calls, [
+      ["verify", "cfk_settings_secret"],
+      ["settings", {
+        serviceId: "xy-erp",
+        userId: "usr_1",
+        eventType: "order.approved"
+      }]
+    ]);
+  });
 });

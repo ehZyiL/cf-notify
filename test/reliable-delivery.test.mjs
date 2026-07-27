@@ -374,4 +374,169 @@ describe("reliable notification delivery", () => {
     const event = await createEvent(env);
     assert.equal(await getEventStatusForService(env.db, event.eventId, "service-b"), null);
   });
+
+  it("uses cf-auth targets without persisting addresses and re-resolves before send", async () => {
+    let targetAvailable = true;
+    const directoryCalls = [];
+    const env = {
+      ...makeEnv(),
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async getEffectiveNotificationSettings(input) {
+          directoryCalls.push({ method: "settings", input });
+          return {
+            userId: input.userId,
+            serviceId: input.serviceId,
+            enabled: true,
+            eventType: input.eventType,
+            channels: [{ channel: "wechat_oa", available: true, enabled: true }]
+          };
+        },
+        async resolveNotificationTargets(input) {
+          directoryCalls.push({ method: "targets", input });
+          return targetAvailable
+            ? {
+                decisionVersion: "decision-1",
+                targets: [{
+                  channel: "wechat_oa",
+                  bindingId: "nb_1",
+                  address: "sensitive-openid",
+                  maskedTarget: "wx***openid"
+                }]
+              }
+            : { decisionVersion: "decision-2", targets: [], skipReason: "not_bound" };
+        }
+      }
+    };
+
+    const event = await createEvent(env);
+    await dispatchEvent(env, event.eventId);
+    const [delivery] = await listEventDeliveries(env.db, event.eventId);
+    assert.equal(delivery.bindingId, "nb_1");
+    assert.equal(delivery.targetKey, "nb_1");
+
+    const stored = await env.db
+      .prepare("SELECT * FROM notification_deliveries WHERE id = ?")
+      .bind(delivery.id)
+      .first();
+    assert.doesNotMatch(JSON.stringify(stored), /sensitive-openid/);
+
+    targetAvailable = false;
+    let adapterCalled = false;
+    await deliverNotification(env, delivery.id, {
+      sendWechat: async () => {
+        adapterCalled = true;
+        return { ok: true };
+      }
+    });
+
+    const [updated] = await listEventDeliveries(env.db, event.eventId);
+    assert.equal(adapterCalled, false);
+    assert.equal(updated.status, "skipped");
+    assert.equal(updated.errorCode, "not_bound");
+    assert.equal(directoryCalls.filter((call) => call.method === "settings").length, 1);
+    assert.equal(directoryCalls.filter((call) => call.method === "targets").length, 2);
+  });
+
+  it("returns an accepted idempotent replay without re-authorizing the recipient", async () => {
+    let settingsCalls = 0;
+    const env = {
+      ...makeEnv(),
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async getEffectiveNotificationSettings(input) {
+          settingsCalls += 1;
+          if (settingsCalls > 1) return null;
+          return {
+            ...input,
+            enabled: true,
+            channels: [{ channel: "wechat_oa", available: true, enabled: true }]
+          };
+        }
+      }
+    };
+
+    const first = await createEvent(env);
+    const replay = await createEvent(env);
+
+    assert.equal(replay.eventId, first.eventId);
+    assert.equal(replay.duplicate, true);
+    assert.equal(settingsCalls, 1);
+  });
+
+  it("rejects raw HTML and provider-controlled fields", async () => {
+    const env = makeEnv();
+    await assert.rejects(
+      () => createEvent(env, { html: "<b>unsafe</b>" }, "invalid:html"),
+      (error) => error.status === 400
+    );
+    await assert.rejects(
+      () => createEvent(env, { providerTemplateId: "provider-1" }, "invalid:provider-template"),
+      (error) => error.status === 400
+    );
+    await assert.rejects(
+      () => createEvent(env, { data: { raw_html: "<b>unsafe</b>" } }, "invalid:data-html"),
+      (error) => error.status === 400
+    );
+    await assert.rejects(
+      () => createEvent(env, { openId: "must-not-pass" }, "invalid:camel-target"),
+      (error) => error.status === 400
+    );
+  });
+
+  it("does not persist a target repeated by an adapter error", async () => {
+    const env = {
+      ...makeEnv(),
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async getEffectiveNotificationSettings(input) {
+          return { ...input, enabled: true, channels: [] };
+        },
+        async resolveNotificationTargets() {
+          return {
+            targets: [{
+              channel: "wechat_oa",
+              bindingId: "nb_private",
+              address: "private-openid-value"
+            }]
+          };
+        }
+      }
+    };
+    const event = await createEvent(env);
+    await dispatchEvent(env, event.eventId);
+    const [delivery] = await listEventDeliveries(env.db, event.eventId);
+
+    await deliverNotification(env, delivery.id, {
+      sendWechat: async () => ({
+        ok: false,
+        retryable: false,
+        errorCode: "provider_rejected",
+        error: "provider rejected private-openid-value"
+      })
+    });
+
+    const stored = await env.db
+      .prepare("SELECT error_detail AS errorDetail FROM notification_deliveries WHERE id = ?")
+      .bind(delivery.id)
+      .first();
+    assert.doesNotMatch(stored.errorDetail, /private-openid-value/);
+    assert.match(stored.errorDetail, /redacted-target/);
+  });
+
+  it("does not let an rpc-mode caller override policy channels", async () => {
+    const env = {
+      ...makeEnv(),
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      authService: {
+        async getEffectiveNotificationSettings(input) {
+          return { ...input, enabled: true, channels: [] };
+        }
+      }
+    };
+    await assert.rejects(
+      () => createEvent(env, { channels: ["wechat_oa"] }, "invalid:channels"),
+      (error) => error.status === 400
+    );
+  });
 });

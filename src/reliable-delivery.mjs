@@ -1,21 +1,34 @@
-import { getVerifiedBinding } from "./bindings.mjs";
 import { deliverToChannel } from "./channels/index.mjs";
 import { HttpError } from "./http.mjs";
-import { isChannelSubscribed, resolveSubscribedChannels } from "./subscriptions.mjs";
+import {
+  authorizeNotificationEvent,
+  resolveNotificationTargets,
+  usesNotificationDirectoryRpc
+} from "./notification-directory.mjs";
 
 const EVENT_TERMINAL = new Set(["completed", "partially_failed", "skipped", "failed"]);
 const DELIVERY_TERMINAL = new Set(["sent", "delivered", "unknown", "failed", "skipped"]);
-const FORBIDDEN_TARGET_FIELDS = ["to", "email", "phone", "openid", "chat_id", "device_token"];
+const FORBIDDEN_TARGET_FIELDS = new Set(["to", "email", "phone", "openid", "chatid", "devicetoken"]);
+const FORBIDDEN_INPUT_FIELDS = new Set([
+  "html",
+  "rawhtml",
+  "bodyhtml",
+  "template",
+  "templateid",
+  "providertemplateid"
+]);
 const FORBIDDEN_DATA_FIELDS = new Set([
   "to",
   "email",
   "phone",
   "openid",
-  "chat_id",
-  "device_token",
+  "chatid",
+  "devicetoken",
   "template",
-  "template_id",
   "templateid",
+  "html",
+  "rawhtml",
+  "bodyhtml",
   "providertemplateid"
 ]);
 const SUPPORTED_CHANNELS = new Set(["wechat_oa", "telegram"]);
@@ -44,6 +57,10 @@ function stableValue(value) {
   return value;
 }
 
+function controlKey(value) {
+  return String(value).toLowerCase().replaceAll("_", "").replaceAll("-", "");
+}
+
 function validateEventData(value, depth = 0, tracker = { properties: 0 }) {
   if (depth > 6) throw new HttpError(400, "data exceeds maximum depth");
   if (value == null || typeof value === "boolean" || typeof value === "number") return;
@@ -60,7 +77,7 @@ function validateEventData(value, depth = 0, tracker = { properties: 0 }) {
   for (const [key, item] of Object.entries(value)) {
     tracker.properties += 1;
     if (tracker.properties > 50) throw new HttpError(400, "data has too many properties");
-    if (FORBIDDEN_DATA_FIELDS.has(key.toLowerCase())) {
+    if (FORBIDDEN_DATA_FIELDS.has(controlKey(key))) {
       throw new HttpError(400, `${key} is controlled by cf-notify and is not accepted in data`);
     }
     validateEventData(item, depth + 1, tracker);
@@ -111,7 +128,7 @@ function deliveryFromRow(row) {
   };
 }
 
-function normalizeInput(input, client) {
+function normalizeInput(input, client, options = {}) {
   const userId = String(input.userId || input.user_id || "").trim();
   const eventType = String(input.type || input.event || input.event_type || "generic").trim();
   const requestedServiceId = String(input.serviceId || input.service_id || "").trim();
@@ -123,8 +140,18 @@ function normalizeInput(input, client) {
   if (requestedServiceId && requestedServiceId !== client.serviceId) {
     throw new HttpError(403, "serviceId does not match authenticated client");
   }
-  for (const field of FORBIDDEN_TARGET_FIELDS) {
-    if (input[field] != null) throw new HttpError(400, `${field} is not accepted; recipients are resolved by cf-notify`);
+  for (const key of Object.keys(input)) {
+    const normalizedKey = controlKey(key);
+    if (FORBIDDEN_TARGET_FIELDS.has(normalizedKey)) {
+      throw new HttpError(400, `${key} is not accepted; recipients are resolved by cf-notify`);
+    }
+    if (FORBIDDEN_INPUT_FIELDS.has(normalizedKey)) {
+      throw new HttpError(400, `${key} is controlled by cf-notify and is not accepted`);
+    }
+  }
+
+  if (options.directoryRpc && input.channels != null) {
+    throw new HttpError(400, "channels is controlled by notification policy in rpc mode");
   }
 
   const rawChannels = Array.isArray(input.channels) && input.channels.length
@@ -204,7 +231,9 @@ export async function ingestNotificationEvent(env, input, client, idempotencyKey
   if (/[^\x21-\x7e]/.test(key)) throw new HttpError(400, "Idempotency-Key contains invalid characters");
   if (!env.dispatchQueue) throw new HttpError(503, "notification queue is not configured");
 
-  const normalized = normalizeInput(input, client);
+  const normalized = normalizeInput(input, client, {
+    directoryRpc: usesNotificationDirectoryRpc(env)
+  });
   // An omitted occurredAt means "ingestion time" and must not make an otherwise
   // identical idempotent replay conflict with the first request.
   const hashValue = input.occurredAt || input.occurred_at
@@ -215,6 +244,36 @@ export async function ingestNotificationEvent(env, input, client, idempotencyKey
     throw new HttpError(413, "notification payload is too large");
   }
   const requestHash = await sha256Hex(canonical);
+
+  const existing = await env.db
+    .prepare(
+      `SELECT id, request_hash AS requestHash, status, dispatch_queued_at AS dispatchQueuedAt
+       FROM notification_events WHERE service_id = ? AND idempotency_key = ?`
+    )
+    .bind(client.serviceId, key)
+    .first();
+  if (existing) {
+    if (existing.requestHash !== requestHash) {
+      throw new HttpError(409, "Idempotency-Key was already used with a different request");
+    }
+    let queued = Boolean(existing.dispatchQueuedAt);
+    if (!queued) queued = await enqueueEvent(env, existing.id);
+    if (!queued) {
+      throw new HttpError(503, "notification was saved but could not be queued", {
+        eventId: existing.id,
+        retryable: true,
+        retryAfterSec: 5
+      });
+    }
+    return { eventId: existing.id, status: existing.status, duplicate: true, queued };
+  }
+
+  await authorizeNotificationEvent(env, {
+    serviceId: client.serviceId,
+    userId: normalized.userId,
+    eventType: normalized.eventType
+  });
+
   const id = `evt_${crypto.randomUUID().replace(/-/g, "")}`;
   const now = nowIso();
   const result = await env.db
@@ -350,43 +409,30 @@ export async function dispatchEvent(env, eventId) {
     .bind(now, event.id)
     .run();
 
-  const channels = await resolveSubscribedChannels(env.db, {
+  const resolution = await resolveNotificationTargets(env, {
     userId: event.userId,
     serviceId: event.serviceId,
     eventType: event.eventType,
-    channels: event.payload.channels || ["wechat_oa"],
-    defaultOpen: env.SUBSCRIPTIONS_DEFAULT_OPEN !== "false"
+    channels: event.payload.channels || ["wechat_oa"]
   });
-  if (!channels.length) {
+  if (!resolution.targets.length) {
     await env.db
       .prepare(
         `UPDATE notification_events
-         SET status = 'skipped', skip_reason = 'not_subscribed', updated_at = ? WHERE id = ?`
+         SET status = 'skipped', skip_reason = ?, updated_at = ? WHERE id = ?`
       )
-      .bind(nowIso(), event.id)
+      .bind(resolution.skipReason || "recipient_not_available", nowIso(), event.id)
       .run();
     return { terminal: true, status: "skipped" };
   }
 
   let enqueueFailed = false;
-  for (const channel of channels) {
-    const binding = await getVerifiedBinding(env.db, event.userId, channel);
-    if (!binding) {
-      await createDelivery(env.db, {
-        eventId: event.id,
-        channel,
-        bindingId: null,
-        targetKey: `unbound:${channel}`,
-        status: "skipped",
-        errorCode: "not_bound"
-      });
-      continue;
-    }
+  for (const target of resolution.targets) {
     const delivery = await createDelivery(env.db, {
       eventId: event.id,
-      channel,
-      bindingId: binding.id,
-      targetKey: binding.id,
+      channel: target.channel,
+      bindingId: target.bindingId,
+      targetKey: target.bindingId,
       status: "pending"
     });
     if (!DELIVERY_TERMINAL.has(delivery.status)) {
@@ -432,27 +478,26 @@ export async function deliverNotification(env, deliveryId, deps = {}) {
   const delivery = await loadDeliveryContext(env.db, deliveryId);
   if (!delivery || DELIVERY_TERMINAL.has(delivery.status)) return { terminal: true };
 
-  const subscribed = await isChannelSubscribed(env.db, {
+  const resolution = await resolveNotificationTargets(env, {
     userId: delivery.userId,
     serviceId: delivery.serviceId,
     eventType: delivery.eventType,
-    channel: delivery.channel,
-    defaultOpen: env.SUBSCRIPTIONS_DEFAULT_OPEN !== "false"
+    channels: delivery.payload.channels || [delivery.channel]
   });
-  if (!subscribed) {
-    await markDeliverySkipped(env.db, delivery, "not_subscribed");
+  const target = resolution.targets.find((item) =>
+    item.channel === delivery.channel && item.bindingId === delivery.bindingId
+  );
+  if (!target) {
+    await markDeliverySkipped(env.db, delivery, resolution.skipReason || "binding_changed");
     return { terminal: true };
   }
-
-  const binding = await getVerifiedBinding(env.db, delivery.userId, delivery.channel);
-  if (!binding) {
-    await markDeliverySkipped(env.db, delivery, "not_bound");
-    return { terminal: true };
-  }
-  if (binding.id !== delivery.bindingId) {
-    await markDeliverySkipped(env.db, delivery, "binding_changed");
-    return { terminal: true };
-  }
+  const binding = {
+    id: target.bindingId,
+    userId: delivery.userId,
+    channel: target.channel,
+    externalId: target.address,
+    status: "verified"
+  };
 
   const startedAt = nowIso();
   const staleAfterSec = Number(env.RECONCILE_AFTER_SEC || 120);
@@ -507,7 +552,10 @@ export async function deliverNotification(env, deliveryId, deps = {}) {
     return { terminal: true };
   }
 
-  const errorDetail = String(result.error || result.errorCode || "delivery failed").slice(0, 500);
+  const rawErrorDetail = String(result.error || result.errorCode || "delivery failed");
+  const errorDetail = rawErrorDetail
+    .replaceAll(target.address, "[redacted-target]")
+    .slice(0, 500);
   if (result.retryable) {
     const attempts = delivery.attempts + 1;
     const delaySeconds = Math.min(900, 15 * 2 ** Math.min(attempts - 1, 6));

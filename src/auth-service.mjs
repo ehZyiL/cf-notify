@@ -5,7 +5,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-const DEFAULT_SCOPES = ["notifications.send", "notifications.delivery.read"];
+const DEFAULT_SCOPES = [
+  "notifications.settings.read",
+  "notifications.send",
+  "notifications.delivery.read"
+];
 const SCOPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,63}$/;
 
 function normalizeScopes(value) {

@@ -1,5 +1,4 @@
 import {
-  requireServiceClient,
   createNotifyClient,
   listNotifyClients,
   revokeNotifyClient
@@ -35,6 +34,10 @@ import {
   retryDelivery,
   retryFailedDeliveries
 } from "./reliable-delivery.mjs";
+import {
+  getEffectiveNotificationSettings,
+  requireServiceIdentity
+} from "./notification-directory.mjs";
 
 /**
  * @param {object} env
@@ -60,6 +63,10 @@ export function createAppHandler(env) {
 
       if (parts[0] === "api") {
         return await handleApi(request, env, parts.slice(1), url);
+      }
+
+      if (parts[0] === "v1") {
+        return await handleApi(request, env, parts, url);
       }
 
       throw new HttpError(404, "not found");
@@ -301,11 +308,35 @@ async function handleApi(request, env, parts, url) {
   }
 
   // Reliable service event API.
+  if (
+    parts[0] === "v1" &&
+    parts[1] === "users" &&
+    parts[2] &&
+    parts[3] === "notification-settings" &&
+    request.method === "GET"
+  ) {
+    const client = await requireServiceIdentity(env, request, {
+      scope: "notifications.settings.read"
+    });
+    const eventType = String(url.searchParams.get("eventType") || "").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(eventType)) {
+      throw new HttpError(400, "eventType is invalid");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(parts[2])) {
+      throw new HttpError(400, "userId is invalid");
+    }
+    return json(await getEffectiveNotificationSettings(env, {
+      serviceId: client.serviceId,
+      userId: parts[2],
+      eventType
+    }));
+  }
+
   if (parts[0] === "v1" && parts[1] === "notifications") {
     const requiredScope = request.method === "GET"
       ? "notifications.delivery.read"
       : "notifications.send";
-    const client = await requireServiceClient(env.db, request, { scope: requiredScope });
+    const client = await requireServiceIdentity(env, request, { scope: requiredScope });
     if (!parts[2] && request.method === "POST") {
       const input = await readJson(request);
       const result = await ingestNotificationEvent(
@@ -326,7 +357,7 @@ async function handleApi(request, env, parts, url) {
 
   // Backwards-compatible send path. Production uses the reliable queue when configured.
   if (parts[0] === "v1" && parts[1] === "send" && request.method === "POST") {
-    const client = await requireServiceClient(env.db, request, { scope: "notifications.send" });
+    const client = await requireServiceIdentity(env, request, { scope: "notifications.send" });
     const input = await readJson(request);
     if (env.dispatchQueue) {
       const result = await ingestNotificationEvent(

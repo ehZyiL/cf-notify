@@ -83,4 +83,57 @@ describe("S4 wechat callback", () => {
     const bindings = await listBindingsForUser(db, "user-42");
     assert.equal(bindings[0].externalId, "oX-openid");
   });
+
+  it("delegates binding and unsubscribe state to cf-auth in rpc mode", async () => {
+    const calls = [];
+    const env = {
+      kv: createMemoryKv(),
+      db: createMemoryDb(),
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      WECHAT_PROVIDER_ACCOUNT_ID: "wechat-main",
+      authService: {
+        async consumeBindingChallenge(input) {
+          calls.push(["consume", input]);
+          return { ok: true, purpose: "wechat_bind", bindingId: "nb_rpc" };
+        },
+        async updateBindingStatus(input) {
+          calls.push(["status", input]);
+          return { ok: true };
+        }
+      }
+    };
+    const bindXml = `<xml>
+      <ToUserName><![CDATA[gh]]></ToUserName>
+      <FromUserName><![CDATA[rpc-openid]]></FromUserName>
+      <MsgType><![CDATA[text]]></MsgType>
+      <Content><![CDATA[AB12CD34]]></Content>
+    </xml>`;
+    const bindResponse = await handleWechatMessage(env, bindXml);
+    assert.match(await bindResponse.text(), /绑定成功/);
+
+    const unsubscribeXml = `<xml>
+      <ToUserName><![CDATA[gh]]></ToUserName>
+      <FromUserName><![CDATA[rpc-openid]]></FromUserName>
+      <MsgType><![CDATA[event]]></MsgType>
+      <Event><![CDATA[unsubscribe]]></Event>
+    </xml>`;
+    await handleWechatMessage(env, unsubscribeXml);
+
+    assert.deepEqual(calls, [
+      ["consume", {
+        token: "AB12CD34",
+        channel: "wechat_oa",
+        providerAccountId: "wechat-main",
+        externalIdentifier: "rpc-openid",
+        metadata: {}
+      }],
+      ["status", {
+        channel: "wechat_oa",
+        providerAccountId: "wechat-main",
+        externalIdentifier: "rpc-openid",
+        status: "unsubscribed",
+        reason: "provider_unsubscribe"
+      }]
+    ]);
+  });
 });

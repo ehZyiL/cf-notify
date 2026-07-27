@@ -8,6 +8,7 @@ Cloudflare Workers 统一通知服务。
 | Phase 1.5 订阅 / 限流 / AES 加解密 / 模板映射 / 退订吊销 | ✅ |
 | Phase 2 管理日志·重试·channel-apps·TG stub·发码登录骨架 | ✅（登录默认关） |
 | Reliable delivery：幂等事件、Dispatch/Delivery Queue、DLQ、Cron 补偿 | ✅ |
+| cf-auth NotificationDirectory RPC 适配层 | ✅（默认兼容模式，待 auth 端上线后切换） |
 | 真机部署 / xy-erp 接入 | ⬜ |
 
 用户身份 = **cf-auth** `sub`。微信出站经 **固定 IP egress**。
@@ -31,6 +32,7 @@ npm test
 | POST | `/api/v1/send` | Service `notifications.send` + `Idempotency-Key` |
 | POST | `/api/v1/notifications` | Service `notifications.send` + `Idempotency-Key` |
 | GET | `/api/v1/notifications/:eventId` | 同一 Service + `notifications.delivery.read` |
+| GET | `/api/v1/users/:userId/notification-settings?eventType=` | Service `notifications.settings.read`，仅 RPC 模式 |
 | GET | `/api/logs` | 用户 JWT |
 | GET/POST | `/wechat/callback` | 微信签名 |
 | POST | `/api/admin/clients` | Bootstrap Key |
@@ -65,13 +67,16 @@ EGRESS_SHARED_SECRET=...
 ADMIN_BOOTSTRAP_KEY=dev-admin
 ALLOW_TEST_TOKEN=true
 WECHAT_CODE_LOGIN_ENABLED=false
+NOTIFICATION_DIRECTORY_MODE=local # cf-auth RPC 上线且完成数据迁移后改为 rpc
 ```
 
 生产用户 JWT 使用 `CF_AUTH` Service Binding 获取 cf-auth RS256 JWKS，不共享私钥或 HMAC secret。`CF_AUTH_ISSUER`、Service Binding、Queue 和 D1/KV binding 在 `wrangler.toml` 中声明。
 
 生产配置默认 `SUBSCRIPTIONS_DEFAULT_OPEN=false`：用户必须先为对应 service/event 建立订阅，业务才能投递。用户创建订阅时还会校验 cf-auth JWT 中的 `services`。
 
-当前成员校验使用 JWT 的 `services` 快照；`cf-auth` 尚未提供 `NotificationDirectory` RPC，因此还不能在每次投递时动态查询权威成员关系。现阶段通过显式订阅和默认关闭策略控制投递，后续可沿现有 `CF_AUTH` Service Binding 补上该 RPC。
+当前生产保持 `NOTIFICATION_DIRECTORY_MODE=local`，继续使用已上线的本地 Service Client、binding 和 subscription。代码已支持切换为 `rpc`：业务 API Key 由 `CF_AUTH.verifyServiceApiKey()` 验证，通知受理查询有效设置，Dispatch 和 Delivery 各自调用 `resolveNotificationTargets()`，微信绑定/取消关注分别调用 `consumeBindingChallenge()` / `updateBindingStatus()`。RPC 故障不会降级读取本地权威数据。
+
+切换前必须先在 cf-auth 部署对应命名 RPC、迁移绑定/偏好/事件目录，并完成契约测试。RPC 返回的明文地址只存在于当前调用内存，不写入 cf-notify D1、Queue 或响应。`CF_AUTH` 的命名 entrypoint 配置应与 cf-auth 最终导出名称一起变更，不能提前修改已上线 binding。
 
 可靠投递使用四个 Queue。首次部署前创建并应用新增迁移：
 
@@ -87,12 +92,14 @@ npx wrangler d1 migrations apply cf-notify --remote
 
 ```http
 POST /api/v1/notifications
-Authorization: Bearer <clientId>:<clientSecret>
+Authorization: Bearer <clientId>:<clientSecret> # local 模式
 Idempotency-Key: xy-erp:order:20260727-001:approved
 Content-Type: application/json
 
 {"userId":"usr_123","type":"order.approved","data":{"orderNo":"SO-001"}}
 ```
+
+`rpc` 模式改用 `Authorization: Bearer cfk_...`，且请求体中的 `serviceId` 不参与授权判断。业务 API 同时支持 `/api/v1/...` 和 `/v1/...` 路径。
 
 生产中的 `/api/v1/send` 在 Queue binding 存在时也进入相同异步链路并返回 `202`；未配置 Queue 的本地兼容模式仍执行原同步发送。
 

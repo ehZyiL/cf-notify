@@ -358,6 +358,8 @@ notify:
 | `BIND_CODE_TTL_SEC` | 默认 300 |
 | `SUBSCRIPTIONS_DEFAULT_OPEN` | 生产默认 `false` |
 | `ENFORCE_USER_SERVICE_MEMBERSHIP` | 生产默认 `true` |
+| `NOTIFICATION_DIRECTORY_MODE` | `local` 保持 Phase 1；cf-auth RPC 和数据迁移完成后切换为 `rpc` |
+| `WECHAT_PROVIDER_ACCOUNT_ID` | RPC 模式的公众号发送主体 ID；未设时回退 `WECHAT_APP_ID` |
 | `WECHAT_CALLBACK_MAX_SKEW_SEC` | 回调时间窗，默认 300 |
 | `EGRESS_TIMEOUT_MS` | egress 超时，默认 10000 |
 
@@ -389,7 +391,10 @@ D1 / KV 绑定：`DB`、`KV`。
 - **P1 不改登录**；用户体系不变。  
 - 文档已预留发码登录：`cf-auth/docs/wechat-notify-and-alt-login.md`。  
 - P2：`WECHAT_CODE_LOGIN_ENABLED` + internal `verify-code` API。
-- 当前 `cf-auth` 尚未实现 `NotificationDirectory` RPC；cf-notify 创建订阅时校验 JWT 内的 `services` 快照，投递时要求显式订阅。若需要即时反映成员关系变更，后续应先在 cf-auth 增加权威查询 RPC，再通过现有 Service Binding 接入。
+- 当前 `cf-auth` 尚未实现 `NotificationDirectory` RPC，生产继续使用 `NOTIFICATION_DIRECTORY_MODE=local`。cf-notify 已完成 RPC 客户端与业务接口，待 auth 端上线并迁移权威数据后切换。
+- `rpc` 模式需要 `verifyServiceApiKey`、`getEffectiveNotificationSettings`、`resolveNotificationTargets`、`consumeBindingChallenge` 和 `updateBindingStatus`。RPC 不可用时请求失败，不回退本地 binding/subscription。
+- Dispatch 和实际 Delivery 前分别解析一次目标；地址只存在于当前 Worker 调用内存，D1 与 Queue 仅保存 event/delivery/binding ID。
+- 本批次尚未实现 auth 事件目录返回的 payload schema 校验和 `deferUntil` 延迟调度；切换 `rpc` 前必须补齐这两项及对应契约测试。
 
 ### 9.2 xy-erp
 

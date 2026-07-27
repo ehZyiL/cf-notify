@@ -31,6 +31,9 @@ CF_AUTH_JWT_AUDIENCE = "cf-auth-session"
 EGRESS_TIMEOUT_MS = "10000"
 SUBSCRIPTIONS_DEFAULT_OPEN = "false"
 ENFORCE_USER_SERVICE_MEMBERSHIP = "true"
+# Compatibility default for the deployed Phase 1 data model. Switch to "rpc"
+# only after cf-auth exposes NotificationDirectory and binding data is migrated.
+NOTIFICATION_DIRECTORY_MODE = "local"
 
 [[queues.producers]]
 binding = "NOTIFY_DISPATCH_QUEUE"
