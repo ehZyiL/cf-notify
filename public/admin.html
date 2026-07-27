@@ -12,12 +12,8 @@
     <div class="gate-card">
       <p class="eyebrow" style="color:#a5b4fc">cf-notify Admin</p>
       <h1 style="color:#0f172a">运营控制台</h1>
-      <p class="muted" style="margin-bottom:16px">使用部署时配置的 Admin Bootstrap Key 进入。请勿对外公开此页面能力。</p>
-      <label class="field">
-        <span>Bootstrap Key</span>
-        <input id="admin-key" type="password" autocomplete="off" placeholder="X-Admin-Bootstrap-Key">
-      </label>
-      <button id="btn-admin-enter" class="btn btn-primary btn-block" type="button">进入控制台</button>
+      <p id="login-status" class="muted" style="margin-bottom:16px">正在检查 cf-auth 登录状态…</p>
+      <button id="btn-admin-enter" class="btn btn-primary btn-block" type="button">使用 cf-auth 登录</button>
     </div>
   </main>
 
@@ -39,7 +35,7 @@
       </nav>
       <div class="sidebar-foot">
         密钥类配置请使用 <span class="mono">wrangler secret</span>。<br>
-        用户绑定请引导至通知中心首页。
+        用户绑定与通知偏好请在 cf-auth 账户中心管理。
       </div>
     </aside>
 

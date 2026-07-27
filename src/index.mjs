@@ -45,10 +45,7 @@ function createRuntime(env) {
     authService: env.CF_AUTH,
     dispatchQueue: env.NOTIFY_DISPATCH_QUEUE,
     deliveryQueue: env.NOTIFY_DELIVERY_QUEUE,
-    CF_AUTH_JWT_SECRET: env.CF_AUTH_JWT_SECRET,
-    CF_AUTH_JWT_AUDIENCE: env.CF_AUTH_JWT_AUDIENCE,
     CF_AUTH_ISSUER: env.CF_AUTH_ISSUER,
-    CF_AUTH_JWKS_URL: env.CF_AUTH_JWKS_URL,
     WECHAT_TOKEN: env.WECHAT_TOKEN,
     WECHAT_CALLBACK_MAX_SKEW_SEC: env.WECHAT_CALLBACK_MAX_SKEW_SEC,
     WECHAT_AES_KEY: env.WECHAT_AES_KEY,
@@ -58,7 +55,6 @@ function createRuntime(env) {
     WECHAT_ACCOUNT_URL: env.WECHAT_ACCOUNT_URL,
     WECHAT_DEFAULT_TEMPLATE_ID: env.WECHAT_DEFAULT_TEMPLATE_ID,
     WECHAT_SEND_MODE: env.WECHAT_SEND_MODE,
-    WECHAT_CODE_LOGIN_ENABLED: env.WECHAT_CODE_LOGIN_ENABLED,
     WECOM_CALLBACK_TOKEN: env.WECOM_CALLBACK_TOKEN,
     WECOM_CALLBACK_MAX_SKEW_SEC: env.WECOM_CALLBACK_MAX_SKEW_SEC,
     WECOM_ENCODING_AES_KEY: env.WECOM_ENCODING_AES_KEY,
@@ -70,16 +66,15 @@ function createRuntime(env) {
     TELEGRAM_BOT_NAME: env.TELEGRAM_BOT_NAME,
     TELEGRAM_BOT_URL: env.TELEGRAM_BOT_URL,
     TELEGRAM_QRCODE_URL: env.TELEGRAM_QRCODE_URL,
-    BIND_CODE_TTL_SEC: env.BIND_CODE_TTL_SEC,
     EGRESS_BASE_URL: env.EGRESS_BASE_URL,
     EGRESS_SHARED_SECRET: env.EGRESS_SHARED_SECRET,
     EGRESS_TIMEOUT_MS: env.EGRESS_TIMEOUT_MS,
-    ADMIN_BOOTSTRAP_KEY: env.ADMIN_BOOTSTRAP_KEY,
-    ALLOW_TEST_TOKEN: env.ALLOW_TEST_TOKEN,
+    ADMIN_OAUTH_CLIENT_ID: env.ADMIN_OAUTH_CLIENT_ID,
+    CF_AUTH_ACCOUNT_URL: env.CF_AUTH_ACCOUNT_URL,
+    oauthFetch: env.oauthFetch,
     RECONCILE_AFTER_SEC: env.RECONCILE_AFTER_SEC,
     RECONCILE_BATCH_SIZE: env.RECONCILE_BATCH_SIZE,
     SUBSCRIPTIONS_DEFAULT_OPEN: env.SUBSCRIPTIONS_DEFAULT_OPEN,
-    ENFORCE_USER_SERVICE_MEMBERSHIP: env.ENFORCE_USER_SERVICE_MEMBERSHIP,
     NOTIFICATION_DIRECTORY_MODE: env.NOTIFICATION_DIRECTORY_MODE,
     WECHAT_PROVIDER_ACCOUNT_ID: env.WECHAT_PROVIDER_ACCOUNT_ID
   };
@@ -89,8 +84,7 @@ function createRuntime(env) {
  * Cloudflare Worker entry for cf-notify.
  *
  * Bindings: DB (D1), KV, ASSETS
- * Secrets: CF_AUTH_JWT_SECRET, WECHAT_TOKEN, EGRESS_BASE_URL, EGRESS_SHARED_SECRET,
- *          ADMIN_BOOTSTRAP_KEY (optional, create service clients)
+ * Secrets: WECHAT_TOKEN, EGRESS_BASE_URL, EGRESS_SHARED_SECRET
  */
 export default {
   async fetch(request, env) {
@@ -108,6 +102,19 @@ export default {
 
     if (isApi) {
       return createAppHandler(createRuntime(env))(request);
+    }
+
+    if (path === "/" || path === "/index.html") {
+      const destination = env.CF_AUTH_ACCOUNT_URL
+        || `${String(env.CF_AUTH_ISSUER || "").replace(/\/$/, "")}/#notifications`;
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: destination,
+          "Cache-Control": "no-store",
+          Pragma: "no-cache"
+        }
+      });
     }
 
     if (env.ASSETS) {

@@ -186,9 +186,5 @@ export async function handleWechatMessage(env, xmlBody) {
     );
   }
 
-  if (result.purpose === "wechat_login") {
-    return reply("发码登录功能暂未开放，请使用账号密码登录后再绑定通知。");
-  }
-
   return reply("绑定成功！您将可以收到系统通知。");
 }

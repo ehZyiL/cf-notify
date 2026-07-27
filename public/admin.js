@@ -1,7 +1,5 @@
-const KEY_STORAGE = "cf_notify_admin_key";
-
 const state = {
-  key: sessionStorage.getItem(KEY_STORAGE) || "",
+  user: null,
   clients: [],
   logs: [],
   guides: []
@@ -29,25 +27,26 @@ function escapeHtml(v) {
 async function adminApi(path, options = {}) {
   const headers = {
     "Content-Type": "application/json",
-    "X-Admin-Bootstrap-Key": state.key,
     ...(options.headers || {})
   };
+  if (!["GET", "HEAD", "OPTIONS"].includes(options.method || "GET")) {
+    headers["X-CSRF-Protection"] = "same-origin";
+  }
   const res = await fetch(path, { ...options, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 403 || res.status === 401) {
-      sessionStorage.removeItem(KEY_STORAGE);
-      state.key = "";
-      showGate();
+    if (res.status === 401) {
+      window.location.assign(`/api/admin/auth/login?returnTo=${encodeURIComponent(window.location.pathname)}`);
     }
     throw new Error(data.error || `HTTP ${res.status}`);
   }
   return data;
 }
 
-function showGate() {
+function showGate(message = "请使用 cf-auth 平台管理员账号登录。") {
   $("gate").hidden = false;
   $("shell").hidden = true;
+  $("login-status").textContent = message;
 }
 
 function showShell() {
@@ -196,26 +195,17 @@ async function loadData() {
   await loadHealth();
 }
 
-$("btn-admin-enter").onclick = async () => {
-  try {
-    const key = $("admin-key").value.trim();
-    if (!key) throw new Error("请输入 Bootstrap Key");
-    state.key = key;
-    sessionStorage.setItem(KEY_STORAGE, key);
-    await loadData();
-    showShell();
-    toast("已进入控制台", "ok");
-  } catch (e) {
-    sessionStorage.removeItem(KEY_STORAGE);
-    state.key = "";
-    toast(e.message, "err");
-  }
+$("btn-admin-enter").onclick = () => {
+  window.location.assign(`/api/admin/auth/login?returnTo=${encodeURIComponent(window.location.pathname)}`);
 };
 
-$("btn-admin-logout").onclick = () => {
-  sessionStorage.removeItem(KEY_STORAGE);
-  state.key = "";
-  showGate();
+$("btn-admin-logout").onclick = async () => {
+  await fetch("/api/admin/session", {
+    method: "DELETE",
+    headers: { "X-CSRF-Protection": "same-origin" }
+  });
+  state.user = null;
+  showGate("已退出 cf-notify 控制台。cf-auth 的登录状态未受影响。");
 };
 
 $("btn-admin-refresh").onclick = () =>
@@ -360,14 +350,23 @@ $("btn-retry").onclick = async () => {
   }
 };
 
-if (state.key) {
-  loadData()
-    .then(() => showShell())
-    .catch(() => {
-      state.key = "";
-      sessionStorage.removeItem(KEY_STORAGE);
-      showGate();
-    });
-} else {
-  showGate();
+async function boot() {
+  const response = await fetch("/api/admin/session", {
+    headers: { Accept: "application/json" }
+  });
+  if (response.status === 401) {
+    window.location.assign(`/api/admin/auth/login?returnTo=${encodeURIComponent(window.location.pathname)}`);
+    return;
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showGate(data.error || "无法验证管理员身份。");
+    return;
+  }
+  state.user = data.user || null;
+  showShell();
+  await loadData();
 }
+
+showGate("正在检查 cf-auth 登录状态…");
+boot().catch((error) => showGate(error.message || "无法加载控制台。"));

@@ -3,13 +3,6 @@ import {
   listNotifyClients,
   revokeNotifyClient
 } from "./auth-service.mjs";
-import { requireUser } from "./auth-user.mjs";
-import {
-  createBindCode,
-  getBindCodeStatus,
-  listBindingsForUser,
-  revokeBinding
-} from "./bindings.mjs";
 import {
   claimWechatCallback,
   handleWechatMessage,
@@ -26,16 +19,9 @@ import {
   releaseWecomCallback,
   verifyWecomSignature
 } from "./channels/wecom-callback.mjs";
-import { bearerToken, HttpError, json, readJson, readText, requireFields, routeParts } from "./http.mjs";
-import { assertBindCodeAllowed } from "./rate-limit.mjs";
+import { HttpError, json, readJson, readText, requireFields, routeParts } from "./http.mjs";
 import { listLogs, retryFailedLogs, sendNotification } from "./send.mjs";
-import {
-  deleteSubscription,
-  listSubscriptions,
-  upsertSubscription
-} from "./subscriptions.mjs";
 import { upsertChannelApp } from "./templates.mjs";
-import { signJwtHs256, timingSafeSecretEqual } from "./crypto.mjs";
 import {
   getEventStatusForService,
   ingestNotificationEvent,
@@ -43,19 +29,21 @@ import {
   retryFailedDeliveries
 } from "./reliable-delivery.mjs";
 import {
-  createDirectoryBindingChallenge,
-  getDirectoryBindingChallengeStatus,
   getEffectiveNotificationSettings,
-  listDirectoryNotificationBindings,
-  requireServiceIdentity,
-  revokeDirectoryNotificationBinding,
-  usesNotificationDirectoryRpc
+  requireServiceIdentity
 } from "./notification-directory.mjs";
 import {
   listChannelGuides,
   resetChannelGuide,
   saveChannelGuide
 } from "./channel-guides.mjs";
+import {
+  endAdminSession,
+  finishAdminLogin,
+  getAdminSession,
+  requireAdminSession,
+  startAdminLogin
+} from "./admin-auth.mjs";
 
 /**
  * @param {object} env
@@ -112,23 +100,6 @@ export function createAppHandler(env) {
       );
     }
   };
-}
-
-function publicBinding(binding) {
-  const externalId = String(binding.externalId || "");
-  const maskedLabel = externalId
-    ? `${externalId.slice(0, 2)}***${externalId.slice(-4)}`
-    : null;
-  const { externalId: _externalId, ...safe } = binding;
-  return { ...safe, maskedLabel };
-}
-
-function userHasService(user, serviceId) {
-  const wanted = String(serviceId || "").toLowerCase();
-  return (user.services || []).some((service) => {
-    const id = typeof service === "string" ? service : service?.id || service?.serviceId;
-    return String(id || "").toLowerCase() === wanted;
-  });
 }
 
 async function handleWechatCallback(request, env, url) {
@@ -246,42 +217,22 @@ async function handleApi(request, env, parts, url) {
     );
   }
 
-  if (parts[0] === "test" && parts[1] === "token" && request.method === "POST") {
-    if (env.ALLOW_TEST_TOKEN !== "true" && env.ALLOW_TEST_TOKEN !== "1") {
-      throw new HttpError(404, "not found");
-    }
-    const input = await readJson(request);
-    const sub = input.userId || input.sub || crypto.randomUUID();
-    const token = await signJwtHs256(
-      { sub, email: input.email || "test@example.com", services: input.services || [] },
-      env.CF_AUTH_JWT_SECRET,
-      { ttlSeconds: 3600, audience: env.CF_AUTH_JWT_AUDIENCE }
-    );
-    return json({ token, userId: sub });
-  }
-
-  // Reserved wechat login challenge (disabled unless flag on)
-  if (parts[0] === "session" && parts[1] === "wechat" && parts[2] === "challenge" && request.method === "POST") {
-    if (env.WECHAT_CODE_LOGIN_ENABLED !== "true" && env.WECHAT_CODE_LOGIN_ENABLED !== "1") {
-      throw new HttpError(403, "wechat code login is disabled");
-    }
-    const input = await readJson(request);
-    const result = await createBindCode(
-      env.db,
-      {
-        purpose: "wechat_login",
-        channel: "wechat_oa",
-        clientId: input.clientId || input.client_id,
-        redirectUri: input.redirectUri || input.redirect_uri,
-        state: input.state
-      },
-      { ttlSec: Number(env.BIND_CODE_TTL_SEC) || 300, loginEnabled: true }
-    );
-    return json({ ...result, qrcodeUrl: env.WECHAT_QRCODE_URL || null });
-  }
-
   if (parts[0] === "admin") {
-    await requireBootstrapAdmin(env, request);
+    if (parts[1] === "auth" && parts[2] === "login" && request.method === "GET") {
+      return startAdminLogin(request, env);
+    }
+    if (parts[1] === "auth" && parts[2] === "callback" && request.method === "GET") {
+      return finishAdminLogin(request, env);
+    }
+    if (parts[1] === "session" && request.method === "GET") {
+      return json(await getAdminSession(request, env), {
+        headers: { "Cache-Control": "no-store", Pragma: "no-cache" }
+      });
+    }
+    if (parts[1] === "session" && request.method === "DELETE") {
+      return endAdminSession(request, env);
+    }
+    await requireAdminSession(env, request);
     if (parts[1] === "channel-guides") {
       if (!parts[2] && request.method === "GET") {
         return json({ guides: await listChannelGuides(env, { includeDisabled: true }) });
@@ -336,127 +287,6 @@ async function handleApi(request, env, parts, url) {
       const input = await readJson(request);
       const id = await upsertChannelApp(env.db, input);
       return json({ id });
-    }
-    throw new HttpError(405, "method not allowed");
-  }
-
-  // User bindings
-  if (parts[0] === "bindings") {
-    const user = await requireUser(env, request);
-    if (!parts[1] && request.method === "GET") {
-      if (usesNotificationDirectoryRpc(env)) {
-        return json({ bindings: await listDirectoryNotificationBindings(env, user.id) });
-      }
-      const bindings = await listBindingsForUser(env.db, user.id);
-      return json({ bindings: bindings.map(publicBinding) });
-    }
-    if (parts[1] === "code" && request.method === "POST") {
-      const block = await assertBindCodeAllowed(env.kv, user.id, request);
-      if (block) throw new HttpError(block.status, block.error, { retryAfterSec: block.retryAfterSec });
-      const input = await readJson(request);
-      const channel = input.channel || "wechat_oa";
-      if (!["wechat_oa", "wecom"].includes(channel)) {
-        throw new HttpError(400, "notification channel is not supported");
-      }
-      if (channel === "wecom" && !usesNotificationDirectoryRpc(env)) {
-        throw new HttpError(409, "WeCom binding requires cf-auth notification directory RPC");
-      }
-      if (usesNotificationDirectoryRpc(env)) {
-        const providerAccountId = channel === "wecom"
-          ? env.WECOM_PROVIDER_ACCOUNT_ID || "wecom-main"
-          : env.WECHAT_PROVIDER_ACCOUNT_ID || env.WECHAT_APP_ID || "default";
-        const challenge = await createDirectoryBindingChallenge(env, {
-          userId: user.id,
-          channel,
-          providerAccountId,
-          purpose: "bind",
-          context: { initiatedBy: "cf_notify_account_center" }
-        });
-        return json({
-          code: challenge.token,
-          expiresAt: challenge.expiresAt,
-          expireIn: challenge.expireIn,
-          qrcodeUrl: channel === "wecom" ? env.WECOM_APP_URL || null : env.WECHAT_QRCODE_URL || null,
-          hint: channel === "wecom"
-            ? `请在企业微信应用中发送绑定码：${challenge.token}`
-            : `请关注公众号后发送绑定码：${challenge.token}`
-        });
-      }
-      const result = await createBindCode(
-        env.db,
-        { userId: user.id, channel, purpose: "wechat_bind" },
-        {
-          ttlSec: Number(env.BIND_CODE_TTL_SEC) || 300,
-          loginEnabled: env.WECHAT_CODE_LOGIN_ENABLED === "true"
-        }
-      );
-      return json({
-        ...result,
-        qrcodeUrl: env.WECHAT_QRCODE_URL || null,
-        hint: `请关注公众号后发送绑定码：${result.code}`
-      });
-    }
-    if (parts[1] === "status" && request.method === "GET") {
-      const code = url.searchParams.get("code") || "";
-      if (!code) throw new HttpError(400, "code is required");
-      if (usesNotificationDirectoryRpc(env)) {
-        return json(await getDirectoryBindingChallengeStatus(env, {
-          token: code,
-          userId: user.id
-        }));
-      }
-      const status = await getBindCodeStatus(env.db, code, { userId: user.id });
-      if (status.status === "expired") {
-        const bindings = await listBindingsForUser(env.db, user.id);
-        const wechat = bindings.find((b) => b.channel === "wechat_oa" && b.status === "verified");
-        if (wechat) return json({ status: "verified", binding: publicBinding(wechat) });
-      }
-      return json(status);
-    }
-    if (parts[1] && request.method === "DELETE") {
-      if (usesNotificationDirectoryRpc(env)) {
-        const result = await revokeDirectoryNotificationBinding(env, {
-          bindingId: parts[1],
-          userId: user.id
-        });
-        if (!result?.ok) throw new HttpError(404, "binding not found");
-        return json({ ok: true });
-      }
-      const ok = await revokeBinding(env.db, parts[1], user.id);
-      if (!ok) throw new HttpError(404, "binding not found");
-      return json({ ok: true });
-    }
-    throw new HttpError(405, "method not allowed");
-  }
-
-  // Subscriptions
-  if (parts[0] === "subscriptions") {
-    const user = await requireUser(env, request);
-    if (usesNotificationDirectoryRpc(env)) {
-      throw new HttpError(409, "notification preferences are managed in cf-auth account center");
-    }
-    if (!parts[1] && request.method === "GET") {
-      return json({ subscriptions: await listSubscriptions(env.db, user.id) });
-    }
-    if (!parts[1] && request.method === "POST") {
-      const input = await readJson(request);
-      requireFields(input, ["serviceId", "eventType"]);
-      if (env.ENFORCE_USER_SERVICE_MEMBERSHIP !== "false" && !userHasService(user, input.serviceId)) {
-        throw new HttpError(403, "user is not assigned to this service");
-      }
-      const sub = await upsertSubscription(env.db, {
-        userId: user.id,
-        serviceId: input.serviceId,
-        eventType: input.eventType,
-        channels: input.channels || ["wechat_oa"],
-        enabled: input.enabled !== false
-      });
-      return json({ subscription: sub });
-    }
-    if (parts[1] && request.method === "DELETE") {
-      const ok = await deleteSubscription(env.db, parts[1], user.id);
-      if (!ok) throw new HttpError(404, "subscription not found");
-      return json({ ok: true });
     }
     throw new HttpError(405, "method not allowed");
   }
@@ -526,24 +356,5 @@ async function handleApi(request, env, parts, url) {
     return json(result);
   }
 
-  // Logs for current user
-  if (parts[0] === "logs" && request.method === "GET") {
-    const user = await requireUser(env, request);
-    const logs = await listLogs(env.db, {
-      userId: user.id,
-      limit: Number(url.searchParams.get("limit") || 50)
-    });
-    return json({ logs });
-  }
-
   throw new HttpError(404, "not found");
-}
-
-async function requireBootstrapAdmin(env, request) {
-  const key = env.ADMIN_BOOTSTRAP_KEY;
-  if (!key) throw new HttpError(404, "not found");
-  const provided =
-    request.headers.get("X-Admin-Bootstrap-Key") ||
-    bearerToken(request);
-  if (!(await timingSafeSecretEqual(provided, key))) throw new HttpError(403, "forbidden");
 }

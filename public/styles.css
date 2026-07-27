@@ -148,57 +148,6 @@ h1, h2, h3, p { margin-top: 0; }
 .toast.ok { background: var(--ok); }
 .toast.err { background: var(--danger); }
 
-/* ===================== USER PORTAL ===================== */
-.portal-shell {
-  min-height: 100vh;
-  background:
-    radial-gradient(1200px 500px at 10% -10%, rgba(99, 102, 241, 0.18), transparent 55%),
-    radial-gradient(900px 400px at 90% 0%, rgba(14, 165, 233, 0.12), transparent 50%),
-    linear-gradient(180deg, #eef2ff 0%, var(--bg-soft) 40%, #eef2f7 100%);
-}
-.portal-header {
-  width: min(1080px, 100%);
-  margin: 0 auto;
-  padding: 28px 20px 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-}
-.brand-mark {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.brand-mark .logo {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #6366f1, #0ea5e9);
-  box-shadow: 0 10px 24px var(--brand-glow);
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-weight: 800;
-  font-size: 14px;
-}
-.brand-mark h1 {
-  margin: 0;
-  font-size: 18px;
-  letter-spacing: -0.02em;
-}
-.brand-mark p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
-
-.portal-main {
-  width: min(1080px, 100%);
-  margin: 0 auto;
-  padding: 8px 20px 48px;
-  display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
-  gap: 20px;
-  align-items: start;
-}
-
 .card {
   background: var(--surface);
   border: 1px solid rgba(226, 232, 240, 0.9);
@@ -219,132 +168,8 @@ h1, h2, h3, p { margin-top: 0; }
   letter-spacing: -0.02em;
 }
 
-.hero-status {
-  display: grid;
-  gap: 10px;
-  padding: 18px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #0f172a, #1e1b4b);
-  color: #e2e8f0;
-  margin-bottom: 18px;
-}
-
-.channel-switch {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0;
-  margin-bottom: 14px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-2);
-}
-
-.channel-option {
-  min-height: 36px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.channel-option.active {
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: 0 1px 3px rgb(15 23 42 / 10%);
-}
-.hero-status strong {
-  font-size: 22px;
-  letter-spacing: -0.03em;
-  color: #fff;
-}
-.hero-status .sub { color: #94a3b8; font-size: 13px; }
-
-.bind-code-panel {
-  text-align: center;
-  padding: 28px 16px;
-  border-radius: 12px;
-  background: var(--surface-2);
-  border: 1px dashed var(--line-strong);
-  margin: 14px 0;
-}
-.bind-code-panel .code {
-  font-family: var(--mono);
-  font-size: clamp(28px, 5vw, 40px);
-  font-weight: 800;
-  letter-spacing: 0.28em;
-  color: var(--brand-dark);
-  margin: 8px 0 4px;
-}
-.steps {
-  display: grid;
-  gap: 10px;
-  margin: 16px 0 0;
-  padding: 0;
-  list-style: none;
-  counter-reset: step;
-}
-.steps li {
-  display: grid;
-  grid-template-columns: 28px 1fr;
-  gap: 10px;
-  align-items: start;
-  color: var(--ink-soft);
-  font-size: 14px;
-  line-height: 1.5;
-}
-.steps li::before {
-  counter-increment: step;
-  content: counter(step);
-  width: 28px;
-  height: 28px;
-  border-radius: 999px;
-  background: var(--brand-soft);
-  color: var(--brand-dark);
-  font-weight: 800;
-  font-size: 13px;
-  display: grid;
-  place-items: center;
-}
-
-.list { display: grid; gap: 10px; }
-.item {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 14px 16px;
-  background: var(--surface-2);
-  display: grid;
-  gap: 8px;
-}
-.item-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-}
-.item-title { margin: 0; font-weight: 750; }
-.item-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  color: var(--muted);
-  font-size: 13px;
-}
 .row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
-.gate {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background:
-    radial-gradient(800px 360px at 50% 0%, rgba(99, 102, 241, 0.2), transparent 60%),
-    var(--bg-soft);
-}
 .gate-card {
   width: min(440px, 100%);
   padding: 28px;
@@ -357,16 +182,6 @@ h1, h2, h3, p { margin-top: 0; }
   margin: 0 0 6px;
   font-size: 24px;
   letter-spacing: -0.03em;
-}
-
-.empty {
-  padding: 20px;
-  text-align: center;
-  color: var(--muted);
-  font-size: 14px;
-  border: 1px dashed var(--line);
-  border-radius: 12px;
-  background: #fff;
 }
 
 /* ===================== ADMIN ===================== */
@@ -557,7 +372,7 @@ td.wrap { white-space: normal; max-width: 280px; }
 }
 
 @media (max-width: 960px) {
-  .portal-main, .grid-2, .stat-row { grid-template-columns: 1fr; }
+  .grid-2, .stat-row { grid-template-columns: 1fr; }
   .admin-shell { grid-template-columns: 1fr; }
   .sidebar {
     position: relative;

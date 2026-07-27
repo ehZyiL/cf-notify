@@ -1,6 +1,4 @@
-/**
- * Simple KV fixed-window rate limits for bind codes.
- */
+/** Simple KV fixed-window rate limits. */
 
 export async function consumeLimit(kv, key, { limit, windowSec, now = Date.now() }) {
   if (!kv || limit <= 0) return { allowed: true, remaining: Infinity };
@@ -16,28 +14,6 @@ export async function consumeLimit(kv, key, { limit, windowSec, now = Date.now()
   count += 1;
   await kv.put(fullKey, String(count), { expirationTtl: windowSec + 5 });
   return { allowed: true, remaining: Math.max(0, limit - count), resetSec: 0 };
-}
-
-export function clientIp(request) {
-  return (
-    request.headers.get("CF-Connecting-IP") ||
-    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ||
-    "unknown"
-  );
-}
-
-/** Bind code: max 3 per user per minute; max 10 bad attempts per openid per minute */
-export async function assertBindCodeAllowed(kv, userId, request) {
-  const ip = clientIp(request);
-  const userLim = await consumeLimit(kv, `bind-user:${userId}`, { limit: 3, windowSec: 60 });
-  if (!userLim.allowed) {
-    return { status: 429, error: "too many bind code requests", retryAfterSec: userLim.resetSec };
-  }
-  const ipLim = await consumeLimit(kv, `bind-ip:${ip}`, { limit: 20, windowSec: 60 });
-  if (!ipLim.allowed) {
-    return { status: 429, error: "too many bind code requests from this network", retryAfterSec: ipLim.resetSec };
-  }
-  return null;
 }
 
 export async function assertOpenidCodeAttemptAllowed(kv, openid) {

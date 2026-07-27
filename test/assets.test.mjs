@@ -15,6 +15,16 @@ function assetEnv() {
 }
 
 describe("public channel guide assets", () => {
+  it("redirects the retired user portal to cf-auth notification settings", async () => {
+    const response = await worker.fetch(
+      new Request("https://notify.example.com/"),
+      { ...assetEnv(), CF_AUTH_ACCOUNT_URL: "https://auth.example.com/#notifications" }
+    );
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("Location"), "https://auth.example.com/#notifications");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+  });
+
   it("allows channel images to be embedded cross-origin", async () => {
     const response = await worker.fetch(
       new Request("https://notify.example.com/channel-assets/wecom-join.jpg"),

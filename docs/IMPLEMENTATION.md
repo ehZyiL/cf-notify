@@ -1,13 +1,6 @@
 # cf-notify 实现方案
 
-> 独立通知微服务：微信公众号 + 企业微信自建应用 + 可扩展 TG；用户绑定以 **cf-auth `user_id`** 为中心；出站微信 API 经 **固定公网 IP 网关**。
-> 备选「公众号发码登录」只做预留，默认关闭。
-
-相关文档：
-
-- cf-auth 侧预留：`../cf-auth/docs/wechat-notify-and-alt-login.md`
-- 绑定码思路参考：[订阅号发码登录](https://segmentfault.com/a/1190000047203211)
-
+> 独立通知微服务：微信公众号 + 企业微信自建应用 + 可扩展 TG；用户绑定以 **cf-auth `user_id`** 为中心；出站微信 API 经 **固定公网 IP 网关**。用户自助入口归属 cf-auth，cf-notify 只保留渠道回调、投递与 OIDC 管理控制台。
 ---
 
 ## 1. 目标与非目标
@@ -24,14 +17,14 @@
 
 ### 1.2 非目标（P1 不做）
 
-- 用公众号发码替代 cf-auth 主登录（仅预留开关与数据字段）
+- 在 cf-notify 建立第二套用户登录或用户会话
 - 企业微信部门/标签/全员广播，以及 TG 完整实现
 - 复杂订阅中心 UI（可先默认「绑定即接收业务事件」）
 - 把 AppSecret 放进浏览器或 xy-erp 前端
 
 ### 1.3 成功标准
 
-1. 用户在 xy-erp（或 notify 简易页）完成公众号绑定，库中有 `verified` 记录。  
+1. 用户在 cf-auth 账户中心完成公众号或企业微信绑定，状态为 `verified`。
 2. xy-erp 用 service key 调 `/api/v1/send`，用户收到模板消息。  
 3. 微信后台 IP 白名单仅含出站网关；回调 URL 为 notify 自定义域。  
 4. 未绑定用户发送返回明确错误，不拖垮调用方。
@@ -42,7 +35,7 @@
 
 ```
                     ┌─────────────┐
-   浏览器/用户 ─────►│  cf-auth    │  身份 JWT (sub=user_id)
+   浏览器/用户 ─────►│  cf-auth    │  同源用户会话
                     └──────┬──────┘
                            │ user_id
          ┌─────────────────┼─────────────────┐
@@ -63,9 +56,9 @@
 
 | 组件 | 运行位置 | 职责 |
 |------|----------|------|
-| **cf-notify** | Cloudflare Workers + D1 + KV + Queues | D1 原子绑定挑战、回调验签、异步发送、状态机、service scope 鉴权 |
+| **cf-notify** | Cloudflare Workers + D1 + KV + Queues | 渠道回调验签、异步发送、状态机、service scope 鉴权、OIDC 管理控制台 |
 | **wechat-egress** | 固定公网 IP 主机（Docker/Node/Go 任选） | `access_token` 缓存、模板/客服消息代理 |
-| **cf-auth** | 已有 | 用户身份与 RS256 JWT；cf-notify 通过 Service Binding 获取 JWKS |
+| **cf-auth** | 已有 | 用户身份、绑定挑战、通知偏好和加密后的渠道标识；通过 Service Binding 向 cf-notify 提供目录 RPC |
 | **业务 Worker** | 已有 xy-erp 等 | 触发通知；设置页引导绑定 |
 
 ---
@@ -81,13 +74,13 @@ cf-notify/
 │   ├── 0002_reliable_delivery.sql
 │   ├── 0003_binding_challenges.sql
 │   └── 0004_client_scopes.sql
-├── public/                        # 可选：简易「绑定状态」页
+├── public/                        # 管理控制台静态资源
 ├── src/
 │   ├── index.mjs                  # Worker 入口
 │   ├── app.mjs                    # 路由
 │   ├── config.mjs
 │   ├── http.mjs
-│   ├── auth-user.mjs              # 校验用户 JWT（调 cf-auth 或本地验签）
+│   ├── admin-auth.mjs             # OIDC/PKCE 管理会话
 │   ├── auth-service.mjs           # service key 校验
 │   ├── bindings.mjs               # 绑定码 + CRUD
 │   ├── send.mjs                   # 发送编排
@@ -192,30 +185,16 @@ CREATE TABLE IF NOT EXISTS channel_apps (
 
 绑定挑战存 D1 `binding_challenges`，数据库只保存短码 SHA-256。消费使用带 `consumed_at IS NULL AND expires_at > ?` 的条件更新，避免并发重复消费。
 
-### 4.3 短码 `purpose`（预留登录）
-
-| purpose | 说明 | P1 |
-|---------|------|-----|
-| `wechat_bind` | 通知绑定 | ✅ 实现 |
-| `wechat_login` | 备选发码登录 | ⬜ 只占位，开关默认关 |
-
----
-
 ## 5. HTTP API
 
-### 5.1 用户侧（需用户 JWT）
+### 5.1 用户侧（已迁移至 cf-auth）
 
-用户 JWT：与 xy-erp 相同——**cf-auth 签发的 access/session**，或业务会话内由 xy-erp BFF 代发绑定请求（推荐 BFF，避免把 notify CORS 搞复杂）。
+绑定、解绑、通知偏好与绑定码创建统一由 cf-auth 账户中心使用同源 HttpOnly session 完成。
+cf-notify `/` 跳转到 cf-auth `/#notifications`。旧 `/api/bindings*`、`/api/subscriptions*`、
+用户 `/api/logs`、测试 Token 和微信登录挑战路由已经删除，均返回 `404`；cf-notify 不接收用户 JWT。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/bindings/code` | Body: `{ channel: "wechat_oa" }` → `{ code, expireIn, qrcodeUrl? }` |
-| `GET` | `/api/bindings/status?code=` | `{ status: pending\|verified\|expired }` |
-| `GET` | `/api/bindings` | 当前用户绑定列表 |
-| `DELETE` | `/api/bindings/:id` | 解绑 |
-
-**鉴权：** `Authorization: Bearer <cf-auth JWT>`  
-验签：生产使用 `CF_AUTH` Service Binding 拉取 RS256 JWKS，并校验 `exp`、`iss`、可选 `aud` 和 `sub`。HS256 只保留给本地兼容测试。创建订阅时必须确认 JWT `services` 包含目标业务。
+cf-auth 生成绑定挑战后，用户向公众号或企业微信应用发送短码。cf-notify 只负责验证供应商回调，
+并通过 `NotificationDirectory.consumeBindingChallenge()` 把验证结果交还 cf-auth。
 
 ### 5.2 业务侧（Service Key）
 
@@ -273,6 +252,11 @@ CREATE TABLE IF NOT EXISTS channel_apps (
 | `GET` | `/health` / `/api/health` | 健康检查 |
 | `GET` | `/api/admin/logs` | P2，平台超管或 notify admin |
 
+`/admin` 使用 cf-auth OIDC Authorization Code + PKCE。公开 client 为 `cf-notify-admin`，浏览器只持有
+HttpOnly opaque session；cf-notify 把短期 access token 存入 KV，并通过 `NotificationDirectory`
+Service Binding 的 `verifyAdminAccessToken()` 对每次后台 API 请求实时校验平台管理员角色。
+Bootstrap Key 鉴权已删除，管理 API 只接受有效的 OIDC 管理会话。
+
 ---
 
 ## 6. 绑定流程（P1 详设）
@@ -280,25 +264,23 @@ CREATE TABLE IF NOT EXISTS channel_apps (
 对齐文章「challenge → 发码 → 回调」：
 
 ```
-1. 用户已登录 xy-erp
-2. xy-erp 前端或 BFF:
-   POST {NOTIFY}/api/bindings/code
-   Authorization: 用户身份（或 xy-erp 用 service key + 确认 session 后代调）
-3. notify 生成 8 位数字/字母 code（约 40 bit，排除易混字符），D1 只保存哈希和 300s 过期时间
+1. 用户已登录 cf-auth 账户中心
+2. cf-auth 使用同源 session 创建绑定挑战，并返回短码
+3. cf-auth 只保存短码摘要、用户和过期时间
 4. UI 展示公众号二维码 + 「请发送：{code}」
-5. 轮询 GET .../status?code= 每 2s，最多 5min
+5. cf-auth 账户中心轮询同源绑定状态接口
 6. 用户发送文本
 7. 回调：
    - 验签
    - 若 Content 匹配 code
-   - 条件 UPDATE 原子消费挑战 → userId
-   - UPSERT channel_bindings
+   - cf-notify 通过 Service Binding 原子消费 cf-auth 中的挑战
+   - cf-auth 写入或更新通知渠道绑定
    - 若 openid 已绑其他 user → 回复失败文案，不覆盖（或策略：强制换绑需解绑）
    - 被动回复「绑定成功」
-8. 轮询 status=verified
+8. cf-auth 账户中心显示 `verified`
 ```
 
-**限流：** 每用户 1 分钟最多 3 次申请码；每 openid 1 分钟最多 10 次错误码。
+**限流：** 绑定码申请由 cf-auth 限流；cf-notify 对每个渠道标识的错误码尝试限流。
 
 ---
 
@@ -345,19 +327,17 @@ notify:
 
 | 变量 | 说明 |
 |------|------|
-| `CF_AUTH` | 指向 `cf-auth` 的 Service Binding，用于 RS256 JWKS |
-| `CF_AUTH_ISSUER` | 必须匹配 JWT `iss` |
-| `CF_AUTH_JWT_SECRET` | 仅 HS256 本地兼容/测试 Token |
+| `CF_AUTH` | 指向 `cf-auth` 的 Service Binding，用于通知目录和管理员 access token 校验 |
+| `CF_AUTH_ISSUER` | cf-auth OIDC issuer |
+| `CF_AUTH_ACCOUNT_URL` | 用户访问 cf-notify 根路径时的账户中心跳转地址 |
+| `ADMIN_OAUTH_CLIENT_ID` | 管理控制台公开 PKCE client，默认 `cf-notify-admin` |
 | `WECHAT_TOKEN` | 公众号服务器 Token |
 | `WECHAT_AES_KEY` | 安全模式 |
 | `WECHAT_APP_ID` | 回调/配置 |
 | `WECHAT_QRCODE_URL` | 关注二维码图片或跳转（展示用） |
 | `EGRESS_BASE_URL` | `https://egress.xxx` |
 | `EGRESS_SHARED_SECRET` | 调网关 |
-| `WECHAT_CODE_LOGIN_ENABLED` | 默认 `false`（备选登录） |
-| `BIND_CODE_TTL_SEC` | 默认 300 |
 | `SUBSCRIPTIONS_DEFAULT_OPEN` | 生产默认 `false` |
-| `ENFORCE_USER_SERVICE_MEMBERSHIP` | 生产默认 `true` |
 | `NOTIFICATION_DIRECTORY_MODE` | 生产使用 `rpc`，由 cf-auth 统一管理加密目标和通知策略 |
 | `WECHAT_PROVIDER_ACCOUNT_ID` | RPC 模式的公众号发送主体 ID；未设时回退 `WECHAT_APP_ID` |
 | `WECHAT_SEND_MODE` | `custom_text` 使用客服文本消息；认证公众号可设为 `template` |
@@ -398,9 +378,7 @@ D1 / KV 绑定：`DB`、`KV`。
 
 ### 9.1 cf-auth
 
-- **P1 不改登录**；用户体系不变。  
-- 文档已预留发码登录：`cf-auth/docs/wechat-notify-and-alt-login.md`。  
-- P2：`WECHAT_CODE_LOGIN_ENABLED` + internal `verify-code` API。
+- 用户登录、绑定和通知偏好均由 cf-auth 账户中心负责；cf-notify 不建立用户会话。
 - `cf-auth` 已实现 `NotificationDirectory` RPC，生产配置使用 `NOTIFICATION_DIRECTORY_MODE=rpc`。
 - `rpc` 模式调用 `verifyServiceApiKey`、`getEffectiveNotificationSettings`、`authorizeNotificationEvent`、`resolveNotificationTargets`、`consumeBindingChallenge` 和 `updateBindingStatus`。RPC 不可用时请求失败，不回退本地 binding/subscription。
 - Dispatch 和实际 Delivery 前分别解析一次目标；地址只存在于当前 Worker 调用内存，D1 与 Queue 仅保存 event/delivery/binding ID。
@@ -410,7 +388,7 @@ D1 / KV 绑定：`DB`、`KV`。
 
 | 点 | 行为 |
 |----|------|
-| 设置页 | 「绑定微信通知」→ 调 bindings/code + 轮询 status |
+| 设置页 | 跳转 cf-auth `/#notifications`，由账户中心创建绑定码并轮询状态 |
 | 任务失败 / 提醒 | `send({ user_id: owner_user_id, event, body })` |
 | 测试发送 | 当前登录用户 user_id + event=`test` |
 
@@ -463,7 +441,6 @@ D1 / KV 绑定：`DB`、`KV`。
 
 ### Phase 2
 
-- `purpose=wechat_login` 备选发码登录（默认关）  
 - Telegram 通道  
 - 管理端绑定/日志查询  
 
@@ -515,10 +492,9 @@ D1 / KV 绑定：`DB`、`KV`。
 | # | 问题 | 建议默认 |
 |---|------|----------|
 | 1 | openid 已绑其他账号时？ | 拒绝覆盖，提示先解绑 |
-| 2 | 订阅是否必须已绑业务？ | 是，校验 JWT `services` |
+| 2 | 订阅是否必须已绑业务？ | 由 cf-auth 通知目录策略决定 |
 | 3 | 未订阅是否默认全开？ | 生产关闭；本地可显式开启兼容模式 |
 | 4 | 模板字段从哪来？ | `channel_apps.template_map_json` + send.data |
-| 5 | 发码登录自动注册？ | **否**，仅已有用户 |
 
 ---
 
@@ -528,7 +504,7 @@ D1 / KV 绑定：`DB`、`KV`。
 1. 创建 D1、KV、Dispatch/Delivery Queue 和两个 DLQ，替换 wrangler 中实际资源 ID
 2. 确认同账号已部署名为 `cf-auth` 的 Worker，并保持 `CF_AUTH_ISSUER` 一致
 3. 应用 0001-0004 D1 migrations
-4. 通过 Worker Secrets 配置微信、egress、admin 与本地兼容密钥
+4. 通过 Worker Secrets 配置微信与 egress 密钥，并在 cf-auth 注册管理端公开 PKCE client
 5. 运行 tests、types check、startup check 和 deploy dry-run
 6. 部署固定 IP egress，再部署 cf-notify
 7. 真机完成关注、绑定、模板发送、429/5xx/DLQ 故障演练
@@ -557,11 +533,11 @@ POST /api/v1/notifications
 - `GET /api/v1/notifications/:eventId` 只允许同一 service 查询，并隐藏真实目标和错误全文。
 - 外部供应商仍只能做到至少一次；网络超时导致结果未知时，DLQ 最终状态记为 `unknown`。
 - 绑定挑战只保存 D1 哈希并原子消费；微信 AES 回调校验签名、时间窗和重放收据。
-- service credential 支持发送/查询 scope、到期和撤销；用户 JWT 支持 cf-auth RS256/JWKS。
+- service credential 支持发送/查询 scope、到期和撤销；管理端 access token 由 cf-auth Service Binding 实时校验。
 
 `/api/v1/send` 保留兼容：部署环境有 Queue binding 时进入可靠异步链路；无 Queue binding 的本地旧测试环境继续同步发送。
 
 本地 PostgreSQL 不作为默认存储。Worker 无法直接访问局域网 PostgreSQL；备选方案必须使用 Hyperdrive + 可达 TLS 数据库，或通过 Tunnel + Access 暴露受限存储 API，严禁公网开放 `5432`。仅为微信 IP 白名单时继续使用固定 IP egress，无需更换 D1。
 
-**文档版本：** 2026-07-27
-**状态：** Phase 1/2 基础能力、可靠投递与企业微信 MVP 已实现，待真实 Cloudflare/微信环境验收
+**文档版本：** 2026-07-28
+**状态：** Phase 1/2 基础能力、可靠投递与企业微信 MVP 已实现，并已完成生产绑定和推送验证

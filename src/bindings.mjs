@@ -1,5 +1,4 @@
 import { randomToken, sha256Hex } from "./crypto.mjs";
-import { HttpError } from "./http.mjs";
 
 const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 
@@ -26,11 +25,8 @@ export function generateBindCode(length = 6) {
 export async function createBindCode(kv, input, options = {}) {
   const userId = String(input.userId || "");
   const channel = String(input.channel || "wechat_oa");
-  const purpose = input.purpose === "wechat_login" ? "wechat_login" : "wechat_bind";
-  if (!userId && purpose === "wechat_bind") throw new Error("userId is required for bind");
-  if (purpose === "wechat_login" && options.loginEnabled === false) {
-    throw new HttpError(403, "wechat code login is disabled");
-  }
+  const purpose = "wechat_bind";
+  if (!userId) throw new Error("userId is required for bind");
 
   const ttlSec = options.ttlSec ?? 300;
   const code = generateBindCode(options.codeLength ?? (kv?.prepare ? 8 : 6));
@@ -145,21 +141,8 @@ export async function consumeBindCode(kv, db, { code, openid, channel = "wechat_
   if (record.channel && record.channel !== channel) {
     return { ok: false, error: "channel mismatch" };
   }
-  if (record.purpose !== "wechat_bind" && record.purpose !== "wechat_login") {
+  if (record.purpose !== "wechat_bind") {
     return { ok: false, error: "unsupported purpose" };
-  }
-
-  // P1: only wechat_bind fully implemented; login purpose returns structured stub
-  if (record.purpose === "wechat_login") {
-    await kv.delete(key);
-    return {
-      ok: true,
-      purpose: "wechat_login",
-      userId: record.userId,
-      openid,
-      loginPending: true,
-      message: "wechat code login is reserved; enable in Phase 2"
-    };
   }
 
   const userId = record.userId;
@@ -195,6 +178,9 @@ async function consumeD1BindCode(store, db, { code, openid, channel }) {
   if (!record) return { ok: false, error: "invalid or expired code" };
   if (record.channel !== channel) return { ok: false, error: "channel mismatch" };
   if (Date.now() >= Number(record.expiresAt)) return { ok: false, error: "expired code" };
+  if (record.purpose !== "wechat_bind" || !record.userId) {
+    return { ok: false, error: "unsupported purpose" };
+  }
   if (record.consumedAt) {
     return record.bindingId
       ? { ok: true, purpose: record.purpose, userId: record.userId, bindingId: record.bindingId, replay: true }
@@ -211,20 +197,6 @@ async function consumeD1BindCode(store, db, { code, openid, channel }) {
     .run();
   if (Number(claim?.meta?.changes || 0) !== 1) {
     return { ok: false, error: "already_consumed" };
-  }
-
-  if (record.purpose === "wechat_login") {
-    return {
-      ok: true,
-      purpose: "wechat_login",
-      userId: record.userId,
-      openid,
-      loginPending: true,
-      message: "wechat code login is reserved; enable in Phase 2"
-    };
-  }
-  if (record.purpose !== "wechat_bind" || !record.userId) {
-    return { ok: false, error: "unsupported purpose" };
   }
 
   const bindResult = await upsertBinding(db, {
