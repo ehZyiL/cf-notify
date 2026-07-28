@@ -233,7 +233,7 @@ describe("WeCom encrypted callback", () => {
     assert.equal(calls, 2);
   });
 
-  it("returns a visible encrypted prompt for non-text callbacks", async () => {
+  it("silently acknowledges non-text callbacks", async () => {
     const env = makeEnv();
     const innerXml = `<xml>
       <ToUserName><![CDATA[${CORP_ID}]]></ToUserName>
@@ -247,9 +247,7 @@ describe("WeCom encrypted callback", () => {
       env,
       `<xml><Encrypt><![CDATA[${encrypted}]]></Encrypt></xml>`
     );
-    const reply = await decryptReply(response, env);
-
-    assert.equal(reply.ToUserName, "prompt-user");
-    assert.match(reply.Content, /8 位绑定码/);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "success");
   });
 });

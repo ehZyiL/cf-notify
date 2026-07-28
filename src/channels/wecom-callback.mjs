@@ -103,7 +103,7 @@ export async function handleWecomMessage(env, xmlBody) {
   }));
   if (!wecomUserId) return new Response("success");
   if (message.MsgType !== "text") {
-    return wecomTextReply(env, message, "请发送账号中心生成的 8 位绑定码。");
+    return new Response("success");
   }
   if (!looksLikeBindingCode) {
     return wecomTextReply(env, message, "绑定码格式不正确，请发送 8 位字母数字绑定码。");
