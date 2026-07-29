@@ -6,7 +6,8 @@ usage() {
 Usage: bash scripts/sync-production-secrets.sh [--check|--apply]
 
   --check  Verify the canonical cloudclone environment, active Worker bindings,
-           callback signature, and fixed-egress authentication. This is the default.
+           provider credential inventory, callback signature, and fixed-egress
+           authentication. This is the default.
   --apply  Deploy the Worker with secrets read from cloudclone, restart the egress
            service, then run the same checks.
 
@@ -59,6 +60,9 @@ remote_app_id_file="$sync_dir/wechat-app-id"
 egress_secret_file="$sync_dir/egress-shared-secret"
 wechat_token_file="$sync_dir/wechat-token"
 wechat_aes_key_file="$sync_dir/wechat-aes-key"
+wecom_corp_id_file="$sync_dir/wecom-corp-id"
+wecom_agent_id_file="$sync_dir/wecom-agent-id"
+wecom_app_secret_file="$sync_dir/wecom-app-secret"
 worker_secrets_file="$sync_dir/worker-secrets.env"
 callback_body_file="$sync_dir/callback-body"
 egress_body_file="$sync_dir/egress-body"
@@ -73,6 +77,9 @@ cleanup() {
     "$egress_secret_file" \
     "$wechat_token_file" \
     "$wechat_aes_key_file" \
+    "$wecom_corp_id_file" \
+    "$wecom_agent_id_file" \
+    "$wecom_app_secret_file" \
     "$worker_secrets_file" \
     "$callback_body_file" \
     "$egress_body_file" \
@@ -130,12 +137,27 @@ fi
 if ! ssh "${ssh_options[@]}" "$egress_ssh_target" bash -s -- "$egress_env_file" <<'REMOTE'
 set -euo pipefail
 env_file=$1
-value=$(awk -F= '$1 == "WECHAT_APP_SECRET" { sub(/^[^=]*=/, ""); print; exit }' "$env_file")
-if ! [[ "$value" =~ ^[0-9A-Fa-f]{32}$ ]]; then
+wechat_app_secret=$(awk -F= '$1 == "WECHAT_APP_SECRET" { sub(/^[^=]*=/, ""); print; exit }' "$env_file")
+wecom_corp_id=$(awk -F= '$1 == "WECOM_CORP_ID" { sub(/^[^=]*=/, ""); print; exit }' "$env_file")
+wecom_agent_id=$(awk -F= '$1 == "WECOM_AGENT_ID" { sub(/^[^=]*=/, ""); print; exit }' "$env_file")
+wecom_app_secret=$(awk -F= '$1 == "WECOM_APP_SECRET" { sub(/^[^=]*=/, ""); print; exit }' "$env_file")
+if ! [[ "$wechat_app_secret" =~ ^[0-9A-Fa-f]{32}$ ]]; then
   echo 'remote_wechat_app_secret=invalid' >&2
   exit 44
 fi
-echo 'remote_wechat_app_secret=present'
+if ! [[ "$wecom_corp_id" =~ ^ww[0-9A-Za-z]{16}$ ]]; then
+  echo 'remote_wecom_corp_id=invalid' >&2
+  exit 44
+fi
+if ! [[ "$wecom_agent_id" =~ ^[0-9]+$ ]]; then
+  echo 'remote_wecom_agent_id=invalid' >&2
+  exit 44
+fi
+if ! [[ "$wecom_app_secret" =~ ^[0-9A-Za-z_-]{43}$ ]]; then
+  echo 'remote_wecom_app_secret=invalid' >&2
+  exit 44
+fi
+echo 'remote_provider_credentials=present'
 REMOTE
 then
   exit 4
@@ -147,15 +169,24 @@ fetch_remote_value WECHAT_TOKEN "$wechat_token_file"
 if ! fetch_remote_value WECHAT_AES_KEY "$wechat_aes_key_file" yes; then
   : > "$wechat_aes_key_file"
 fi
+fetch_remote_value WECOM_CORP_ID "$wecom_corp_id_file"
+fetch_remote_value WECOM_AGENT_ID "$wecom_agent_id_file"
+fetch_remote_value WECOM_APP_SECRET "$wecom_app_secret_file"
 
 remote_app_id=$(sed -n '1p' "$remote_app_id_file")
 local_app_id=$(awk -F'"' '/^[[:space:]]*WECHAT_APP_ID[[:space:]]*=/{print $2; exit}' "$wrangler_config")
+remote_wecom_corp_id=$(sed -n '1p' "$wecom_corp_id_file")
+local_wecom_corp_id=$(awk -F'"' '/^[[:space:]]*WECOM_CORP_ID[[:space:]]*=/{print $2; exit}' "$wrangler_config")
 if ! [[ "$remote_app_id" =~ ^wx[0-9A-Za-z]{16}$ ]]; then
   echo 'Canonical WECHAT_APP_ID has an invalid format.' >&2
   exit 4
 fi
 if [ "$local_app_id" != "$remote_app_id" ]; then
   echo 'WECHAT_APP_ID drift: wrangler.toml does not match cloudclone.' >&2
+  exit 4
+fi
+if [ "$local_wecom_corp_id" != "$remote_wecom_corp_id" ]; then
+  echo 'WECOM_CORP_ID drift: wrangler.toml does not match cloudclone.' >&2
   exit 4
 fi
 if [ "$(wc -c < "$egress_secret_file")" -lt 32 ]; then
@@ -241,8 +272,13 @@ fi
   npx wrangler versions view "$active_version" --config "$wrangler_config" --json > "$version_file"
 )
 active_app_id=$(jq -r '.resources.bindings[] | select(.name == "WECHAT_APP_ID") | .text' "$version_file")
+active_wecom_corp_id=$(jq -r '.resources.bindings[] | select(.name == "WECOM_CORP_ID") | .text' "$version_file")
 if [ "$active_app_id" != "$remote_app_id" ]; then
   echo 'Active Worker WECHAT_APP_ID does not match cloudclone.' >&2
+  exit 5
+fi
+if [ "$active_wecom_corp_id" != "$remote_wecom_corp_id" ]; then
+  echo 'Active Worker WECOM_CORP_ID does not match cloudclone.' >&2
   exit 5
 fi
 if jq -e '.resources.bindings[] | select(.name == "WECHAT_APP_SECRET")' "$version_file" >/dev/null; then
@@ -297,10 +333,26 @@ if [ "$egress_http" != "400" ] || ! grep -q 'openid and text required' "$egress_
   exit 6
 fi
 
+wecom_egress_http=$(curl --silent --show-error \
+  --request POST \
+  --output "$egress_body_file" \
+  --write-out '%{http_code}' \
+  "$egress_base_url/wecom/app/send" \
+  --header @"$egress_header_file" \
+  --header 'Content-Type: application/json' \
+  --data '{}')
+if [ "$wecom_egress_http" != "400" ] || ! grep -q 'one WeCom userId is required' "$egress_body_file"; then
+  printf 'WeCom fixed-egress authentication probe failed with HTTP %s.\n' "$wecom_egress_http" >&2
+  exit 6
+fi
+
 printf 'mode=%s\n' "$mode"
 printf 'canonical_env_permissions=%s\n' "$remote_permissions"
 printf 'worker_version=%s\n' "$active_version"
 printf 'wechat_app_id_sync=passed\n'
+printf 'wecom_corp_id_sync=passed\n'
+printf 'provider_credential_inventory=passed\n'
 printf 'wechat_callback_signature=passed\n'
 printf 'egress_authentication=passed\n'
+printf 'wecom_egress_authentication=passed\n'
 printf 'production_secret_sync=passed\n'
