@@ -13,6 +13,14 @@ function makeEnv(overrides = {}) {
     db: createMemoryDb(),
     kv: createMemoryKv(),
     WECHAT_TOKEN: "wx-token",
+    WECOM_CALLBACK_TOKEN: "wecom-token",
+    WECOM_ENCODING_AES_KEY: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+    WECOM_CORP_ID: "ww-test-corp",
+    EGRESS_BASE_URL: "https://egress.example.com",
+    EGRESS_SHARED_SECRET: "test-egress-secret",
+    egressFetch: async () => new Response(JSON.stringify({ ok: true }), {
+      headers: { "Content-Type": "application/json" }
+    }),
     CF_AUTH_ISSUER: "https://auth.example.com",
     ADMIN_OAUTH_CLIENT_ID: "cf-notify-admin",
     authService: {
@@ -120,6 +128,8 @@ describe("S6 HTTP entry", () => {
     assert.equal(initial.data.guides.length, 1);
     assert.equal(initial.data.guides[0].channel, "wecom");
     assert.equal(initial.data.guides[0].accountName, "Example Corp");
+    assert.equal(initial.data.channels.find((item) => item.channel === "wecom").available, true);
+    assert.equal(initial.data.channels.find((item) => item.channel === "telegram").reason, "not_implemented");
 
     const updated = await jsonFetch(handler, "/api/admin/channel-guides/wecom", {
       method: "PUT",
@@ -157,6 +167,126 @@ describe("S6 HTTP entry", () => {
     });
     assert.equal(response.status, 400);
     assert.match(response.data.error, /HTTPS URL/);
+  });
+
+  it("does not let an unfinished channel become a public guide", async () => {
+    const env = makeEnv();
+    const handler = createAppHandler(env);
+    const response = await jsonFetch(handler, "/api/admin/channel-guides/telegram", {
+      method: "PUT",
+      headers: await adminHeaders(env, { write: true }),
+      body: {
+        enabled: true,
+        displayName: "Telegram",
+        actionUrl: "https://t.me/example_bot"
+      }
+    });
+    assert.equal(response.status, 409);
+    assert.equal(response.data.details.reason, "not_implemented");
+
+    const publicGuides = await jsonFetch(handler, "/api/channel-guides");
+    assert.equal(publicGuides.data.guides.some((item) => item.channel === "telegram"), false);
+  });
+
+  it("reports runtime ownership and dependency readiness to administrators", async () => {
+    const env = makeEnv({
+      NOTIFICATION_DIRECTORY_MODE: "rpc",
+      WECHAT_SEND_MODE: "custom_text",
+      dispatchQueue: { send: async () => {} },
+      deliveryQueue: { send: async () => {} }
+    });
+    const handler = createAppHandler(env);
+    const headers = await adminHeaders(env);
+
+    const runtime = await jsonFetch(handler, "/api/admin/runtime", { headers });
+    assert.equal(runtime.status, 200);
+    assert.equal(runtime.data.directoryMode, "rpc");
+    assert.equal(runtime.data.serviceCredentials.source, "cf-auth");
+    assert.equal(runtime.data.messaging.templateMappingEnabled, false);
+
+    const readiness = await jsonFetch(handler, "/api/admin/readiness", { headers });
+    assert.equal(readiness.status, 200);
+    assert.equal(readiness.data.ok, true);
+    assert.equal(readiness.data.checks.database.status, "ok");
+    assert.equal(readiness.data.checks.egress.status, "ok");
+  });
+
+  it("prevents local service credential writes in rpc mode", async () => {
+    const env = makeEnv({ NOTIFICATION_DIRECTORY_MODE: "rpc" });
+    const handler = createAppHandler(env);
+    const response = await jsonFetch(handler, "/api/admin/clients", {
+      method: "POST",
+      headers: await adminHeaders(env, { write: true }),
+      body: { serviceId: "xy-erp" }
+    });
+    assert.equal(response.status, 409);
+    assert.equal(response.data.details.managedBy, "cf-auth");
+  });
+
+  it("previews retries and permits only reviewed retry candidates", async () => {
+    const queued = [];
+    const env = makeEnv({ deliveryQueue: { send: async (body) => queued.push(body) } });
+    const now = new Date().toISOString();
+    await env.db.prepare(
+      `INSERT INTO notification_events
+       (id, service_id, client_id, user_id, event_type, idempotency_key, request_hash,
+        payload_json, locale, occurred_at, status, created_at, updated_at)
+       VALUES ('evt_retry', 'xy-erp', 'key-1', 'usr-1', 'notification.test', 'retry-key',
+               'hash', '{}', NULL, ?, 'failed', ?, ?)`
+    ).bind(now, now, now).run();
+    await env.db.prepare(
+      `INSERT INTO notification_deliveries
+       (id, event_id, channel, binding_id, target_key, status, attempts, error_code,
+        created_at, updated_at)
+       VALUES ('dlv_permanent', 'evt_retry', 'wecom', 'binding-1', 'binding-1',
+               'failed', 1, 'invalid_user', ?, ?),
+              ('dlv_dlq', 'evt_retry', 'wecom', 'binding-2', 'binding-2',
+               'failed', 8, 'delivery_dlq', ?, ?),
+              ('dlv_unknown', 'evt_retry', 'wecom', 'binding-3', 'binding-3',
+               'unknown', 8, 'delivery_dlq', ?, ?)`
+    ).bind(now, now, now, now, now, now).run();
+    const handler = createAppHandler(env);
+    const writeHeaders = await adminHeaders(env, { write: true });
+
+    const preview = await jsonFetch(handler, "/api/admin/retry", {
+      method: "POST",
+      headers: writeHeaders,
+      body: {}
+    });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.data.dryRun, true);
+    assert.equal(preview.data.candidates.length, 3);
+    assert.equal(preview.data.candidates.find((item) => item.deliveryId === "dlv_permanent").canRetry, false);
+
+    const permanent = await jsonFetch(handler, "/api/admin/deliveries/dlv_permanent/retry", {
+      method: "POST",
+      headers: writeHeaders,
+      body: {}
+    });
+    assert.equal(permanent.status, 409);
+
+    const dlq = await jsonFetch(handler, "/api/admin/deliveries/dlv_dlq/retry", {
+      method: "POST",
+      headers: writeHeaders,
+      body: {}
+    });
+    assert.equal(dlq.status, 200);
+
+    const unknownWithoutAck = await jsonFetch(handler, "/api/admin/deliveries/dlv_unknown/retry", {
+      method: "POST",
+      headers: writeHeaders,
+      body: {}
+    });
+    assert.equal(unknownWithoutAck.status, 409);
+
+    const unknown = await jsonFetch(handler, "/api/admin/deliveries/dlv_unknown/retry", {
+      method: "POST",
+      headers: writeHeaders,
+      body: { acknowledgeUnknownDuplicateRisk: true }
+    });
+    assert.equal(unknown.status, 200);
+    assert.equal(unknown.data.duplicateRisk, true);
+    assert.deepEqual(queued, [{ deliveryId: "dlv_dlq" }, { deliveryId: "dlv_unknown" }]);
   });
 
   it("rejects send without service auth", async () => {

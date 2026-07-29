@@ -1,4 +1,5 @@
 import { HttpError } from "./http.mjs";
+import { capabilityReasonMessage, getChannelCapability } from "./channel-capabilities.mjs";
 
 const GUIDE_KEY_PREFIX = "channel-guide:v1:";
 
@@ -141,6 +142,13 @@ export async function saveChannelGuide(env, channel, input) {
     updatedAt: new Date().toISOString(),
     source: "kv"
   }, fallback);
+  const capability = getChannelCapability(env, guide);
+  if (guide.enabled && !capability.available) {
+    throw new HttpError(409, capabilityReasonMessage(capability.reason), {
+      channel,
+      reason: capability.reason
+    });
+  }
   await env.kv.put(guideKey(channel), JSON.stringify(guide));
   return guide;
 }

@@ -2,7 +2,9 @@ const state = {
   user: null,
   clients: [],
   logs: [],
-  guides: []
+  guides: [],
+  capabilities: [],
+  runtime: null
 };
 
 const $ = (id) => document.getElementById(id);
@@ -65,7 +67,7 @@ function switchPage(name) {
     overview: "总览",
     clients: "服务凭证",
     guides: "渠道引导",
-    templates: "模板映射",
+    templates: "公众号字段映射",
     logs: "投递日志"
   };
   $("page-title").textContent = titles[name] || name;
@@ -82,6 +84,20 @@ function safeHttpsUrl(value) {
 
 function currentGuide() {
   return state.guides.find((guide) => guide.channel === $("guide-channel").value) || null;
+}
+
+function currentCapability() {
+  return state.capabilities.find((item) => item.channel === $("guide-channel").value) || null;
+}
+
+function capabilityReason(reason) {
+  return {
+    not_implemented: "该渠道尚未实现投递适配器，不能发布给用户。",
+    guide_disabled: "当前未向用户开放；配置完整后可启用。",
+    callback_not_configured: "渠道回调配置不完整，暂不能发布。",
+    egress_not_configured: "固定出口网关配置不完整，暂不能发布。",
+    unsupported_send_mode: "公众号发送模式无效，暂不能发布。"
+  }[reason] || "渠道尚未就绪。";
 }
 
 function renderGuidePreview() {
@@ -103,6 +119,7 @@ function renderGuidePreview() {
 function renderGuideForm() {
   const guide = currentGuide();
   if (!guide) return;
+  const capability = currentCapability();
   $("guide-enabled").checked = Boolean(guide.enabled);
   $("guide-display-name").value = guide.displayName || "";
   $("guide-account-name").value = guide.accountName || "";
@@ -112,7 +129,43 @@ function renderGuideForm() {
   $("guide-action-label").value = guide.actionLabel || "";
   $("guide-source").textContent = guide.source === "kv" ? "动态配置" : "环境默认";
   $("guide-source").className = `badge ${guide.source === "kv" ? "badge-ok" : "badge-muted"}`;
+  const capabilityBadge = $("guide-capability");
+  const detail = $("guide-capability-detail");
+  if (capability) {
+    const ready = capability.status === "ready";
+    capabilityBadge.textContent = ready ? "可发布" : capability.status === "disabled" ? "未开放" : "不可发布";
+    capabilityBadge.className = `badge ${ready ? "badge-ok" : capability.status === "disabled" ? "badge-muted" : "badge-danger"}`;
+    detail.textContent = ready
+      ? `绑定与投递配置已就绪 · ${capability.mode || "默认模式"}`
+      : capabilityReason(capability.reason);
+    detail.hidden = false;
+  } else {
+    capabilityBadge.textContent = "状态未知";
+    capabilityBadge.className = "badge badge-muted";
+    detail.hidden = true;
+  }
   renderGuidePreview();
+}
+
+function applyRuntimeProfile() {
+  const runtime = state.runtime;
+  if (!runtime) return;
+  const localCredentials = Boolean(runtime.serviceCredentials?.localManagementEnabled);
+  const templateMapping = Boolean(runtime.messaging?.templateMappingEnabled);
+  $("nav-clients").hidden = !localCredentials;
+  $("nav-templates").hidden = !templateMapping;
+  $("clients-mode-note").hidden = localCredentials;
+  $("clients-mode-note").textContent = "当前为 RPC 模式，服务 API Key 由 cf-auth 统一管理；本地凭证不会参与生产鉴权。";
+  $("template-mode-note").hidden = templateMapping;
+  $("template-mode-note").textContent = `当前公众号发送模式为 ${runtime.messaging?.wechatSendMode || "未知"}，字段映射不会参与投递。`;
+  $("stat-credentials").textContent = runtime.serviceCredentials?.source || "—";
+  $("runtime-directory").textContent = runtime.directoryMode === "rpc" ? "cf-auth RPC" : "本地目录";
+  $("runtime-credentials").textContent = runtime.serviceCredentials?.source || "—";
+  $("runtime-wechat-mode").textContent = runtime.messaging?.wechatSendMode || "—";
+  $("runtime-api").textContent = runtime.canonicalApiPath || "—";
+  $("runtime-badge").textContent = runtime.directoryMode === "rpc" ? "Production" : "Local";
+  $("runtime-badge").className = `badge ${runtime.directoryMode === "rpc" ? "badge-ok" : "badge-warn"}`;
+  state.capabilities = runtime.channels || state.capabilities;
 }
 
 function renderClients() {
@@ -134,65 +187,100 @@ function renderClients() {
     </tr>`
     )
     .join("");
-  $("stat-clients").textContent = String(state.clients.length);
+}
+
+function logCanRetry(log) {
+  return log.source === "delivery"
+    && (log.status === "unknown" || (log.status === "failed" && log.error === "delivery_dlq"));
 }
 
 function renderLogs() {
   const tb = $("logs-tbody");
   if (!state.logs.length) {
-    tb.innerHTML = `<tr><td colspan="7" class="muted">暂无日志</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="10" class="muted">暂无日志</td></tr>`;
     return;
   }
   tb.innerHTML = state.logs
     .map((l) => {
       const badge =
-        l.status === "sent" ? "badge-ok" : l.status === "failed" ? "badge-danger" : "badge-warn";
+        l.status === "sent" || l.status === "delivered"
+          ? "badge-ok"
+          : l.status === "failed" || l.status === "unknown"
+            ? "badge-danger"
+            : "badge-warn";
+      const retry = logCanRetry(l)
+        ? `<button type="button" class="btn btn-secondary btn-sm" data-retry-delivery="${escapeHtml(l.id)}" data-duplicate-risk="${l.status === "unknown"}">重试</button>`
+        : "—";
       return `<tr>
         <td>${l.createdAt ? escapeHtml(new Date(l.createdAt).toLocaleString("zh-CN")) : "—"}</td>
+        <td class="mono" title="${escapeHtml(l.id || "")}">${escapeHtml((l.id || "—").slice(0, 18))}</td>
         <td class="mono">${escapeHtml(l.userId || "—")}</td>
         <td>${escapeHtml(l.serviceId || "—")}</td>
         <td>${escapeHtml(l.eventType || "—")}</td>
         <td>${escapeHtml(l.channel || "—")}</td>
         <td><span class="badge ${badge}">${escapeHtml(l.status)}</span></td>
+        <td>${escapeHtml(l.attempts ?? 0)}</td>
         <td class="wrap mono">${escapeHtml(l.error || "")}</td>
+        <td>${retry}</td>
       </tr>`;
     })
     .join("");
   $("stat-logs").textContent = String(state.logs.length);
-  $("stat-failed").textContent = String(state.logs.filter((l) => l.status === "failed").length);
+  $("stat-failed").textContent = String(state.logs.filter((l) => ["failed", "unknown"].includes(l.status)).length);
 }
 
-async function loadHealth() {
+function readinessLabel(key) {
+  return {
+    database: "D1 数据库",
+    kv: "KV 会话/配置",
+    notificationDirectory: "通知目录",
+    dispatchQueue: "Dispatch Queue",
+    deliveryQueue: "Delivery Queue",
+    egress: "固定出口网关"
+  }[key] || key;
+}
+
+async function loadReadiness() {
   try {
-    const res = await fetch("/api/health");
-    const data = await res.json();
-    if (data.ok) {
-      $("health-badge").textContent = "Healthy";
-      $("health-badge").className = "badge badge-ok";
-      $("health-detail").textContent = `cf-notify · ${data.time || ""}`;
-    } else {
-      throw new Error("unhealthy");
+    const data = await adminApi("/api/admin/readiness");
+    if (data.runtime) {
+      state.runtime = data.runtime;
+      applyRuntimeProfile();
     }
-  } catch {
-    $("health-badge").textContent = "Down";
+    $("health-badge").textContent = data.ok ? "Ready" : "Degraded";
+    $("health-badge").className = `badge ${data.ok ? "badge-ok" : "badge-danger"}`;
+    $("health-detail").textContent = `检查时间：${new Date(data.checkedAt).toLocaleString("zh-CN")}`;
+    $("health-checks").innerHTML = Object.entries(data.checks || {}).map(([key, check]) => `
+      <div class="readiness-item ${check.status === "down" ? "down" : ""}">
+        <strong>${escapeHtml(readinessLabel(key))}</strong>
+        <span>${escapeHtml(check.status)}${check.detail ? ` · ${escapeHtml(check.detail)}` : ""}</span>
+      </div>`).join("");
+  } catch (error) {
+    $("health-badge").textContent = "Unavailable";
     $("health-badge").className = "badge badge-danger";
-    $("health-detail").textContent = "无法获取健康状态";
+    $("health-detail").textContent = error.message || "无法获取就绪状态";
+    $("health-checks").innerHTML = "";
   }
 }
 
 async function loadData() {
+  state.runtime = await adminApi("/api/admin/runtime");
+  applyRuntimeProfile();
   const [clients, logs, guides] = await Promise.all([
-    adminApi("/api/admin/clients"),
+    state.runtime.serviceCredentials?.localManagementEnabled
+      ? adminApi("/api/admin/clients")
+      : Promise.resolve({ clients: [] }),
     adminApi("/api/admin/logs?limit=50"),
     adminApi("/api/admin/channel-guides")
   ]);
   state.clients = clients.clients || [];
   state.logs = logs.logs || [];
   state.guides = guides.guides || [];
+  state.capabilities = guides.channels || state.runtime.channels || [];
   renderClients();
   renderLogs();
   renderGuideForm();
-  await loadHealth();
+  await loadReadiness();
 }
 
 $("btn-admin-enter").onclick = () => {
@@ -234,6 +322,9 @@ $("guide-form").onsubmit = async (event) => {
       })
     });
     state.guides = state.guides.map((guide) => guide.channel === channel ? data.guide : guide);
+    if (data.capability) {
+      state.capabilities = state.capabilities.map((item) => item.channel === channel ? data.capability : item);
+    }
     renderGuideForm();
     toast("渠道引导已保存", "ok");
   } catch (error) {
@@ -249,6 +340,9 @@ $("guide-reset").onclick = async () => {
       method: "DELETE"
     });
     state.guides = state.guides.map((guide) => guide.channel === channel ? data.guide : guide);
+    if (data.capability) {
+      state.capabilities = state.capabilities.map((item) => item.channel === channel ? data.capability : item);
+    }
     renderGuideForm();
     toast("已恢复环境默认", "ok");
   } catch (error) {
@@ -339,14 +433,31 @@ $("btn-logs-load").onclick = async () => {
   }
 };
 
-$("btn-retry").onclick = async () => {
+$("logs-tbody").onclick = async (event) => {
+  const button = event.target.closest("[data-retry-delivery]");
+  if (!button) return;
+  const duplicateRisk = button.dataset.duplicateRisk === "true";
+  const prompt = duplicateRisk
+    ? "供应商结果未知，重试可能产生重复通知。确认承担该风险并继续？"
+    : "确认重新投递这条已耗尽重试次数的通知？";
+  if (!confirm(prompt)) return;
+  button.disabled = true;
   try {
-    const data = await adminApi("/api/admin/retry", { method: "POST", body: "{}" });
-    $("retry-result").textContent = JSON.stringify(data.results || data, null, 2);
-    await loadData();
-    toast("已触发重试", "ok");
+    await adminApi(`/api/admin/deliveries/${encodeURIComponent(button.dataset.retryDelivery)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ acknowledgeUnknownDuplicateRisk: duplicateRisk })
+    });
+    const userId = $("logs-user-filter").value.trim();
+    const q = userId ? `?userId=${encodeURIComponent(userId)}&limit=80` : "?limit=80";
+    const data = await adminApi(`/api/admin/logs${q}`);
+    state.logs = data.logs || [];
+    renderLogs();
+    await loadReadiness();
+    toast("投递已重新入队", "ok");
   } catch (e) {
     toast(e.message, "err");
+  } finally {
+    button.disabled = false;
   }
 };
 

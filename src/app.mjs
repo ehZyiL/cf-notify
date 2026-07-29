@@ -20,23 +20,27 @@ import {
   verifyWecomSignature
 } from "./channels/wecom-callback.mjs";
 import { HttpError, json, readJson, readText, requireFields, routeParts } from "./http.mjs";
-import { listLogs, retryFailedLogs, sendNotification } from "./send.mjs";
+import { listLogs, sendNotification } from "./send.mjs";
 import { upsertChannelApp } from "./templates.mjs";
 import {
+  getDeliveryRetryCandidate,
   getEventStatusForService,
   ingestNotificationEvent,
+  listDeliveryRetryCandidates,
   retryDelivery,
-  retryFailedDeliveries
 } from "./reliable-delivery.mjs";
 import {
   getEffectiveNotificationSettings,
-  requireServiceIdentity
+  requireServiceIdentity,
+  usesNotificationDirectoryRpc
 } from "./notification-directory.mjs";
 import {
   listChannelGuides,
   resetChannelGuide,
   saveChannelGuide
 } from "./channel-guides.mjs";
+import { getChannelCapability, listChannelCapabilities } from "./channel-capabilities.mjs";
+import { getAdminReadiness, getProductRuntime } from "./product-status.mjs";
 import {
   endAdminSession,
   finishAdminLogin,
@@ -205,8 +209,14 @@ async function handleWecomCallback(request, env, url) {
 
 async function handleApi(request, env, parts, url) {
   if (parts[0] === "channel-guides" && request.method === "GET") {
+    const allGuides = await listChannelGuides(env, { includeDisabled: true });
+    const channels = listChannelCapabilities(env, allGuides);
+    const available = new Set(channels.filter((channel) => channel.available).map((channel) => channel.channel));
     return json(
-      { guides: await listChannelGuides(env) },
+      {
+        guides: allGuides.filter((guide) => available.has(guide.channel)),
+        channels
+      },
       {
         headers: {
           "Access-Control-Allow-Origin": "*",
@@ -232,22 +242,40 @@ async function handleApi(request, env, parts, url) {
     if (parts[1] === "session" && request.method === "DELETE") {
       return endAdminSession(request, env);
     }
-    await requireAdminSession(env, request);
+    const adminSession = await requireAdminSession(env, request);
+    if (parts[1] === "runtime" && request.method === "GET") {
+      return json(await getProductRuntime(env));
+    }
+    if (parts[1] === "readiness" && request.method === "GET") {
+      return json(await getAdminReadiness(env));
+    }
     if (parts[1] === "channel-guides") {
       if (!parts[2] && request.method === "GET") {
-        return json({ guides: await listChannelGuides(env, { includeDisabled: true }) });
+        const guides = await listChannelGuides(env, { includeDisabled: true });
+        return json({ guides, channels: listChannelCapabilities(env, guides) });
       }
       if (parts[2] && request.method === "PUT") {
         const guide = await saveChannelGuide(env, parts[2], await readJson(request));
-        return json({ guide });
+        return json({ guide, capability: getChannelCapability(env, guide) });
       }
       if (parts[2] && request.method === "DELETE") {
-        return json({ guide: await resetChannelGuide(env, parts[2]) });
+        const guide = await resetChannelGuide(env, parts[2]);
+        return json({ guide, capability: getChannelCapability(env, guide) });
       }
       throw new HttpError(405, "method not allowed");
     }
     if (parts[1] === "clients") {
-      if (!parts[2] && request.method === "GET") return json({ clients: await listNotifyClients(env.db) });
+      if (usesNotificationDirectoryRpc(env)) {
+        if (!parts[2] && request.method === "GET") {
+          return json({ clients: [], managedBy: "cf-auth", writable: false });
+        }
+        throw new HttpError(409, "service credentials are managed by cf-auth in rpc mode", {
+          managedBy: "cf-auth"
+        });
+      }
+      if (!parts[2] && request.method === "GET") {
+        return json({ clients: await listNotifyClients(env.db), managedBy: "cf-notify", writable: true });
+      }
       if (!parts[2] && request.method === "POST") {
         const input = await readJson(request);
         requireFields(input, ["serviceId"]);
@@ -268,20 +296,94 @@ async function handleApi(request, env, parts, url) {
       return json({ logs });
     }
     if (parts[1] === "retry" && request.method === "POST") {
-      const [legacy, reliable] = await Promise.all([
-        retryFailedLogs(env, { limit: 20 }),
-        retryFailedDeliveries(env, { limit: 20 })
-      ]);
-      const results = [
-        ...legacy.map((item) => ({ source: "legacy", ...item })),
-        ...reliable.map((item) => ({ source: "delivery", ...item }))
-      ];
-      return json({ results });
+      const input = await readJson(request);
+      const candidates = await listDeliveryRetryCandidates(env.db, { limit: 50 });
+      if (input.confirm !== true) {
+        return json({
+          dryRun: true,
+          candidates,
+          message: "select deliveryIds and explicitly confirm before retrying"
+        });
+      }
+      const deliveryIds = [...new Set(
+        (Array.isArray(input.deliveryIds) ? input.deliveryIds : [])
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+      )];
+      if (!deliveryIds.length || deliveryIds.length > 20) {
+        throw new HttpError(400, "deliveryIds must contain between 1 and 20 items");
+      }
+      const selected = [];
+      for (const deliveryId of deliveryIds) {
+        const candidate = await getDeliveryRetryCandidate(env.db, deliveryId);
+        if (!candidate) throw new HttpError(404, `delivery not found: ${deliveryId}`);
+        if (!candidate.canRetry) {
+          throw new HttpError(409, `delivery requires configuration repair before retry: ${deliveryId}`, {
+            deliveryId,
+            reason: candidate.reason,
+            errorCode: candidate.errorCode
+          });
+        }
+        if (candidate.duplicateRisk && input.acknowledgeUnknownDuplicateRisk !== true) {
+          throw new HttpError(409, "unknown provider outcomes may create duplicate notifications", {
+            deliveryId,
+            acknowledgeField: "acknowledgeUnknownDuplicateRisk"
+          });
+        }
+        selected.push(candidate);
+      }
+      const results = [];
+      for (const candidate of selected) {
+        results.push({
+          deliveryId: candidate.deliveryId,
+          queued: await retryDelivery(env, candidate.deliveryId, {
+            acknowledgeUnknownDuplicateRisk: input.acknowledgeUnknownDuplicateRisk === true
+          })
+        });
+      }
+      console.log(JSON.stringify({
+        event: "admin_delivery_retry_batch",
+        actorUserId: adminSession.admin.userId,
+        deliveryIds,
+        count: deliveryIds.length
+      }));
+      return json({ dryRun: false, results });
     }
     if (parts[1] === "deliveries" && parts[2] && parts[3] === "retry" && request.method === "POST") {
-      const queued = await retryDelivery(env, parts[2]);
-      if (!queued) throw new HttpError(404, "delivery not found or queue unavailable");
-      return json({ ok: true, deliveryId: parts[2], queued });
+      const input = await readJson(request);
+      const candidate = await getDeliveryRetryCandidate(env.db, parts[2]);
+      if (!candidate) throw new HttpError(404, "delivery not found");
+      if (!candidate.canRetry) {
+        throw new HttpError(409, "delivery requires configuration repair before retry", {
+          deliveryId: candidate.deliveryId,
+          reason: candidate.reason,
+          errorCode: candidate.errorCode
+        });
+      }
+      if (candidate.duplicateRisk && input.acknowledgeUnknownDuplicateRisk !== true) {
+        throw new HttpError(409, "unknown provider outcomes may create duplicate notifications", {
+          deliveryId: candidate.deliveryId,
+          acknowledgeField: "acknowledgeUnknownDuplicateRisk"
+        });
+      }
+      const queued = await retryDelivery(env, parts[2], {
+        acknowledgeUnknownDuplicateRisk: input.acknowledgeUnknownDuplicateRisk === true
+      });
+      if (!queued) {
+        const latest = await getDeliveryRetryCandidate(env.db, parts[2]);
+        if (latest && ["pending", "retrying", "sending"].includes(latest.status)) {
+          throw new HttpError(409, "delivery is already queued for retry");
+        }
+        throw new HttpError(503, "delivery could not be queued and remains eligible for retry");
+      }
+      console.log(JSON.stringify({
+        event: "admin_delivery_retry",
+        actorUserId: adminSession.admin.userId,
+        deliveryId: parts[2],
+        previousStatus: candidate.status,
+        duplicateRisk: candidate.duplicateRisk
+      }));
+      return json({ ok: true, deliveryId: parts[2], queued, duplicateRisk: candidate.duplicateRisk });
     }
     if (parts[1] === "channel-apps" && request.method === "POST") {
       const input = await readJson(request);

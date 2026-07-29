@@ -12,7 +12,7 @@ Cloudflare Workers 统一通知服务。
 | 企业微信：加密回调绑定、应用消息、固定 IP egress | ✅（已生产验证） |
 | 用户入口迁移至 cf-auth + 管理端 OIDC/PKCE SSO | ✅ |
 | 生产部署 | ✅ |
-| xy-erp 接入 | ⬜ |
+| xy-erp 接入 | 🟡 模板与测试通知已接入；自动成功通知和截止提醒仍关闭 |
 
 用户身份 = **cf-auth** `sub`。公众号和企业微信出站均经 **固定 IP egress**。
 
@@ -20,7 +20,7 @@ Cloudflare Workers 统一通知服务。
 
 ```bash
 npm test
-# 93 passed
+# 103 passed
 ```
 
 ## 主要 API
@@ -41,7 +41,10 @@ npm test
 | GET/PUT/DELETE | `/api/admin/channel-guides/:channel?` | cf-auth 平台管理员 SSO |
 | POST/DELETE | `/api/admin/clients[/:clientId]` | cf-auth 平台管理员 SSO |
 | GET | `/api/admin/logs` | cf-auth 平台管理员 SSO |
-| POST | `/api/admin/retry` | cf-auth 平台管理员 SSO |
+| GET | `/api/admin/runtime` | cf-auth 平台管理员 SSO，非敏感运行模式 |
+| GET | `/api/admin/readiness` | cf-auth 平台管理员 SSO，依赖就绪状态 |
+| POST | `/api/admin/retry` | cf-auth 平台管理员 SSO，先预览再显式确认 |
+| POST | `/api/admin/deliveries/:deliveryId/retry` | cf-auth 平台管理员 SSO，安全单条重试 |
 | POST | `/api/admin/channel-apps` | cf-auth 平台管理员 SSO |
 
 ## 界面
@@ -89,9 +92,9 @@ cf-notify 不接收用户 JWT。用户绑定和通知偏好使用 cf-auth 自身
 
 RPC 返回的 openid / 企业微信 UserID 只存在于当前 Worker 调用内存，不写入 cf-notify D1、Queue 或响应。企业微信 MVP 只允许绑定单个成员并向该成员发送自建应用消息，不接受部门、标签、多个成员或 `@all` 广播。
 
-企业微信回调侧配置 `WECOM_CALLBACK_TOKEN`、`WECOM_ENCODING_AES_KEY`、`WECOM_CORP_ID`、`WECOM_PROVIDER_ACCOUNT_ID` 和可选的 `WECOM_APP_URL`。固定 IP egress 单独配置 `WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_AGENT_ID`；AppSecret 不进入 Worker、浏览器、D1 或 Queue。消息有 HTTPS 详情地址时发送 `textcard`，否则发送 `text`。
+企业微信回调侧配置 `WECOM_CALLBACK_TOKEN`、`WECOM_ENCODING_AES_KEY`、`WECOM_CORP_ID`、`WECOM_PROVIDER_ACCOUNT_ID` 和可选的 `WECOM_APP_URL`。固定 IP egress 单独配置 `WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_AGENT_ID`；AppSecret 不进入 Worker、浏览器、D1 或 Queue。消息有不含用户名/密码的 HTTPS 详情地址时发送 `textcard`，否则发送 `text`；可靠事件入口会拒绝 HTTP 或带凭据链接。
 
-渠道引导由 `/api/channel-guides` 公开只读提供。管理端只把 `imageUrl`、`actionUrl` 等非敏感元数据写入 KV，优先级为 KV 动态配置 > Worker vars > 内置文案；二维码二进制仍托管在静态资源或外部 CDN，不写入 KV。微信公众号、企业微信和 Telegram 均使用相同结构，新增渠道入口不需要修改 cf-auth 页面结构。
+渠道引导由 `/api/channel-guides` 公开只读提供，同时返回渠道的 implemented、bindable、sendable、available、mode 和 reason。只有回调、固定出口与适配器均就绪的渠道才进入公开 guides；未实现的 Telegram 不能被运营端发布。管理端只把 `imageUrl`、`actionUrl` 等非敏感元数据写入 KV，优先级为 KV 动态配置 > Worker vars > 内置文案；二维码二进制仍托管在静态资源或外部 CDN，不写入 KV。
 
 可靠投递使用四个 Queue。首次部署前创建并应用新增迁移：
 
@@ -138,6 +141,7 @@ Cloudflare Worker 不能直接访问家庭/局域网地址。需要 PostgreSQL �
 ## 文档
 
 - [docs/IMPLEMENTATION.md](./docs/IMPLEMENTATION.md)
+- [docs/PRODUCT_OPTIMIZATION.md](./docs/PRODUCT_OPTIMIZATION.md)
 - [egress/README.md](./egress/README.md)
 
 ## 原则
