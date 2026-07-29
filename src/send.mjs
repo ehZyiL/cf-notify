@@ -232,18 +232,20 @@ export async function writeLog(db, item) {
 export async function listLogs(db, { userId, limit = 50 } = {}) {
   const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
   const union = `
-    SELECT id, user_id, service_id, event_type, channel, status, error, created_at
+    SELECT id, NULL AS event_id, user_id, service_id, event_type, channel, status, error,
+           0 AS attempts, created_at, created_at AS updated_at, 'legacy' AS source
     FROM notification_logs
     UNION ALL
-    SELECT d.id, e.user_id, e.service_id, e.event_type, d.channel, d.status,
-           d.error_code AS error, d.created_at
+    SELECT d.id, d.event_id, e.user_id, e.service_id, e.event_type, d.channel, d.status,
+           d.error_code AS error, d.attempts, d.created_at, d.updated_at, 'delivery' AS source
     FROM notification_deliveries d
     JOIN notification_events e ON e.id = d.event_id`;
   if (userId) {
     const { results } = await db
       .prepare(
-        `SELECT id, user_id AS userId, service_id AS serviceId, event_type AS eventType,
-                channel, status, error, created_at AS createdAt
+        `SELECT id, event_id AS eventId, user_id AS userId, service_id AS serviceId,
+                event_type AS eventType, channel, status, error, attempts,
+                source, created_at AS createdAt, updated_at AS updatedAt
          FROM (${union}) WHERE user_id = ?
          ORDER BY created_at DESC LIMIT ?`
       )
@@ -253,8 +255,9 @@ export async function listLogs(db, { userId, limit = 50 } = {}) {
   }
   const { results } = await db
     .prepare(
-      `SELECT id, user_id AS userId, service_id AS serviceId, event_type AS eventType,
-              channel, status, error, created_at AS createdAt
+      `SELECT id, event_id AS eventId, user_id AS userId, service_id AS serviceId,
+              event_type AS eventType, channel, status, error, attempts,
+              source, created_at AS createdAt, updated_at AS updatedAt
        FROM (${union})
        ORDER BY created_at DESC LIMIT ?`
     )

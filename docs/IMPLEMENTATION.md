@@ -1,5 +1,7 @@
 # cf-notify 实现方案
 
+> 产品边界、问题优先级和后续上线门槛见 [PRODUCT_OPTIMIZATION.md](./PRODUCT_OPTIMIZATION.md)。
+
 > 独立通知微服务：微信公众号 + 企业微信自建应用 + 可扩展 TG；用户绑定以 **cf-auth `user_id`** 为中心；出站微信 API 经 **固定公网 IP 网关**。用户自助入口归属 cf-auth，cf-notify 只保留渠道回调、投递与 OIDC 管理控制台。
 ---
 
@@ -220,6 +222,9 @@ cf-auth 生成绑定挑战后，用户向公众号或企业微信应用发送短
   "data": { "orderNo": "SO-001", "result": "failed" }
 }
 ```
+
+`url` 可选，但必须是无用户名、无密码的 HTTPS URL；接收目标、token、供应商模板 ID 和
+其他凭据不得放入链接。业务深链仍需由业务系统在登录后重新校验用户与资源权限。
 
 收件目标和供应商模板由 cf-notify 的绑定、订阅及 `channel_apps` 配置解析；请求中的 `openid`、`chat_id`、`template`、`template_id` 等字段会被拒绝。
 

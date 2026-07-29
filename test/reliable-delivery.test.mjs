@@ -104,6 +104,10 @@ describe("reliable notification delivery", () => {
       () => createEvent(env, { url: "http://insecure.example.com" }, "invalid:url"),
       (error) => error.status === 400
     );
+    await assert.rejects(
+      () => createEvent(env, { url: "https://user:password@example.com/action" }, "invalid:url-credentials"),
+      (error) => error.status === 400
+    );
     assert.equal(env.dispatchQueue.messages.length, 0);
   });
 
@@ -297,6 +301,80 @@ describe("reliable notification delivery", () => {
     const retried = await retryFailedDeliveries(env);
     assert.deepEqual(retried, [{ deliveryId: delivery.id, queued: true }]);
     assert.deepEqual(env.deliveryQueue.messages, [{ deliveryId: delivery.id }]);
+  });
+
+  it("restores a retryable delivery when manual re-enqueue fails", async () => {
+    const env = makeEnv();
+    await upsertBinding(env.db, {
+      userId: "user-a",
+      channel: "wechat_oa",
+      externalId: "openid-a"
+    });
+    const event = await createEvent(env);
+    await dispatchEvent(env, event.eventId);
+    const [delivery] = await listEventDeliveries(env.db, event.eventId);
+    await processDeadLetter(env, { deliveryId: delivery.id }, "delivery");
+
+    env.deliveryQueue.error = new Error("queue unavailable");
+    assert.equal(await retryDelivery(env, delivery.id), false);
+
+    const failed = await getEventStatusForService(env.db, event.eventId, "service-a");
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.deliveries[0].status, "failed");
+    assert.equal(failed.deliveries[0].errorCode, "delivery_dlq");
+
+    env.deliveryQueue.error = null;
+    assert.equal(await retryDelivery(env, delivery.id), true);
+    const retrying = await getEventStatusForService(env.db, event.eventId, "service-a");
+    assert.equal(retrying.status, "dispatching");
+    assert.equal(retrying.deliveries[0].status, "pending");
+  });
+
+  it("enforces retry risk policy in the delivery core", async () => {
+    const permanentEnv = makeEnv();
+    await upsertBinding(permanentEnv.db, {
+      userId: "user-a",
+      channel: "wechat_oa",
+      externalId: "openid-a"
+    });
+    const permanentEvent = await createEvent(permanentEnv);
+    await dispatchEvent(permanentEnv, permanentEvent.eventId);
+    const [permanentDelivery] = await listEventDeliveries(permanentEnv.db, permanentEvent.eventId);
+    await deliverNotification(permanentEnv, permanentDelivery.id, {
+      sendWechat: async () => ({
+        ok: false,
+        retryable: false,
+        errorCode: "invalid_user",
+        error: "invalid recipient"
+      })
+    });
+    permanentEnv.deliveryQueue.messages.length = 0;
+    assert.equal(await retryDelivery(permanentEnv, permanentDelivery.id), false);
+    assert.deepEqual(permanentEnv.deliveryQueue.messages, []);
+
+    const unknownEnv = makeEnv();
+    await upsertBinding(unknownEnv.db, {
+      userId: "user-a",
+      channel: "wechat_oa",
+      externalId: "openid-a"
+    });
+    const unknownEvent = await createEvent(unknownEnv, {}, "order:unknown");
+    await dispatchEvent(unknownEnv, unknownEvent.eventId);
+    const [unknownDelivery] = await listEventDeliveries(unknownEnv.db, unknownEvent.eventId);
+    await unknownEnv.db
+      .prepare(
+        `UPDATE notification_deliveries
+         SET status = 'unknown', error_code = 'delivery_dlq' WHERE id = ?`
+      )
+      .bind(unknownDelivery.id)
+      .run();
+    unknownEnv.deliveryQueue.messages.length = 0;
+
+    assert.equal(await retryDelivery(unknownEnv, unknownDelivery.id), false);
+    assert.equal(await retryDelivery(unknownEnv, unknownDelivery.id, {
+      acknowledgeUnknownDuplicateRisk: true
+    }), true);
+    assert.deepEqual(unknownEnv.deliveryQueue.messages, [{ deliveryId: unknownDelivery.id }]);
   });
 
   it("does not manually retry a successfully sent delivery", async () => {

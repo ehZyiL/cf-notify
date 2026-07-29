@@ -179,10 +179,12 @@ function normalizeInput(input, client, options = {}) {
   if (input.url) {
     try {
       const parsed = new URL(String(input.url));
-      if (parsed.protocol !== "https:") throw new Error("not https");
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password) {
+        throw new Error("unsafe URL");
+      }
       linkUrl = parsed.toString().slice(0, 2048);
     } catch {
-      throw new HttpError(400, "url must be a valid HTTPS URL");
+      throw new HttpError(400, "url must be a valid HTTPS URL without credentials");
     }
   }
 
@@ -825,18 +827,123 @@ export async function getEventStatusForService(db, eventId, serviceId) {
   };
 }
 
-export async function retryDelivery(env, deliveryId) {
+function retryAssessment(row) {
+  const status = String(row?.status || "");
+  const errorCode = String(row?.errorCode ?? row?.error_code ?? "");
+  if (status === "unknown") {
+    return { canRetry: true, duplicateRisk: true, reason: "provider_outcome_unknown" };
+  }
+  if (status === "failed" && errorCode === "delivery_dlq") {
+    return { canRetry: true, duplicateRisk: false, reason: "retry_exhausted" };
+  }
+  return { canRetry: false, duplicateRisk: false, reason: "permanent_failure" };
+}
+
+function retryCandidateFromRow(row) {
+  if (!row) return null;
+  return {
+    deliveryId: row.deliveryId ?? row.id,
+    eventId: row.eventId ?? row.event_id,
+    serviceId: row.serviceId ?? row.service_id,
+    userId: row.userId ?? row.user_id,
+    eventType: row.eventType ?? row.event_type,
+    channel: row.channel,
+    status: row.status,
+    attempts: Number(row.attempts || 0),
+    errorCode: row.errorCode ?? row.error_code ?? null,
+    updatedAt: row.updatedAt ?? row.updated_at,
+    ...retryAssessment(row)
+  };
+}
+
+export async function getDeliveryRetryCandidate(db, deliveryId) {
+  const row = await db
+    .prepare(
+      `SELECT d.id AS deliveryId, d.event_id AS eventId, e.service_id AS serviceId,
+              e.user_id AS userId, e.event_type AS eventType, d.channel, d.status,
+              d.attempts, d.error_code AS errorCode, d.updated_at AS updatedAt
+       FROM notification_deliveries d
+       JOIN notification_events e ON e.id = d.event_id
+       WHERE d.id = ?`
+    )
+    .bind(deliveryId)
+    .first();
+  return retryCandidateFromRow(row);
+}
+
+export async function listDeliveryRetryCandidates(db, options = {}) {
+  const limit = Math.max(1, Math.min(100, Number(options.limit) || 20));
+  const { results } = await db
+    .prepare(
+      `SELECT d.id AS deliveryId, d.event_id AS eventId, e.service_id AS serviceId,
+              e.user_id AS userId, e.event_type AS eventType, d.channel, d.status,
+              d.attempts, d.error_code AS errorCode, d.updated_at AS updatedAt
+       FROM notification_deliveries d
+       JOIN notification_events e ON e.id = d.event_id
+       WHERE d.status IN ('failed', 'unknown')
+       ORDER BY d.updated_at ASC LIMIT ?`
+    )
+    .bind(limit)
+    .all();
+  return (results || []).map(retryCandidateFromRow);
+}
+
+export async function retryDelivery(env, deliveryId, options = {}) {
+  const original = await env.db
+    .prepare(
+      `SELECT event_id AS eventId, status, error_code AS errorCode,
+              error_detail AS errorDetail, next_attempt_at AS nextAttemptAt
+       FROM notification_deliveries WHERE id = ?`
+    )
+    .bind(deliveryId)
+    .first();
+  if (!original || !["failed", "unknown"].includes(original.status)) return false;
+  const assessment = retryAssessment(original);
+  if (!assessment.canRetry) return false;
+  if (assessment.duplicateRisk && options.acknowledgeUnknownDuplicateRisk !== true) return false;
+
   const now = nowIso();
   const result = await env.db
     .prepare(
       `UPDATE notification_deliveries
        SET status = 'pending', next_attempt_at = NULL, error_code = NULL, error_detail = NULL, updated_at = ?
-       WHERE id = ? AND status IN ('failed', 'unknown')`
+       WHERE id = ? AND status = ?`
     )
-    .bind(now, deliveryId)
+    .bind(now, deliveryId, original.status)
     .run();
   if (Number(result?.meta?.changes || 0) !== 1) return false;
-  return enqueueDelivery(env, deliveryId);
+
+  let queued = false;
+  try {
+    await aggregateEventStatus(env.db, original.eventId);
+    queued = await enqueueDelivery(env, deliveryId);
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "delivery_manual_retry_failed",
+      deliveryId,
+      error: String(error?.message || error).slice(0, 500)
+    }));
+  }
+  if (queued) return true;
+
+  const restoredAt = nowIso();
+  await env.db
+    .prepare(
+      `UPDATE notification_deliveries
+       SET status = ?, error_code = ?, error_detail = ?, next_attempt_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'pending'`
+    )
+    .bind(
+      original.status,
+      original.errorCode || null,
+      original.errorDetail || null,
+      original.nextAttemptAt || null,
+      restoredAt,
+      deliveryId
+    )
+    .run();
+  await aggregateEventStatus(env.db, original.eventId);
+  return false;
 }
 
 export async function retryFailedDeliveries(env, options = {}) {
@@ -845,7 +952,8 @@ export async function retryFailedDeliveries(env, options = {}) {
   const { results } = await env.db
     .prepare(
       `SELECT id FROM notification_deliveries
-       WHERE status IN ('failed', 'unknown') ORDER BY updated_at LIMIT ?`
+       WHERE status = 'failed' AND error_code = 'delivery_dlq'
+       ORDER BY updated_at LIMIT ?`
     )
     .bind(limit)
     .all();
