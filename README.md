@@ -98,6 +98,9 @@ RPC 返回的 openid / 企业微信 UserID 只存在于当前 Worker 调用内�
 
 可靠投递使用四个 Queue。首次部署前创建并应用新增迁移：
 
+- `cf-notify-dispatch`、`cf-notify-delivery`：主派发与投递队列
+- `cf-notify-dispatch-dlq`、`cf-notify-delivery-dlq`：重试耗尽后的死信队列；消费者负责把最终状态写回 D1
+
 ```bash
 npx wrangler queues create cf-notify-dispatch
 npx wrangler queues create cf-notify-delivery
@@ -142,6 +145,7 @@ Cloudflare Worker 不能直接访问家庭/局域网地址。需要 PostgreSQL �
 
 - [docs/IMPLEMENTATION.md](./docs/IMPLEMENTATION.md)
 - [docs/PRODUCT_OPTIMIZATION.md](./docs/PRODUCT_OPTIMIZATION.md)
+- [docs/SECRETS.md](./docs/SECRETS.md)
 - [egress/README.md](./egress/README.md)
 
 ## 原则

@@ -108,10 +108,12 @@ export async function getAdminReadiness(env) {
       detail: runtime.directoryMode === "rpc" ? "cf-auth Service Binding" : "local directory"
     },
     dispatchQueue: {
-      status: env.dispatchQueue && typeof env.dispatchQueue.send === "function" ? "configured" : "down"
+      status: env.dispatchQueue && typeof env.dispatchQueue.send === "function" ? "configured" : "down",
+      detail: "retries → cf-notify-dispatch-dlq"
     },
     deliveryQueue: {
-      status: env.deliveryQueue && typeof env.deliveryQueue.send === "function" ? "configured" : "down"
+      status: env.deliveryQueue && typeof env.deliveryQueue.send === "function" ? "configured" : "down",
+      detail: "retries → cf-notify-delivery-dlq"
     },
     egress
   };

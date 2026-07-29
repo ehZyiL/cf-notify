@@ -9,7 +9,9 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types worker-configuration.d.ts --include-runtime=false",
     "check:types": "wrangler types --check worker-configuration.d.ts --include-runtime=false",
-    "check:startup": "wrangler check startup"
+    "check:startup": "wrangler check startup",
+    "prod:secrets:check": "bash scripts/sync-production-secrets.sh --check",
+    "prod:secrets:apply": "bash scripts/sync-production-secrets.sh --apply"
   },
   "devDependencies": {
     "wrangler": "^4.114.0"

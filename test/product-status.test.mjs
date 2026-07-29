@@ -54,6 +54,16 @@ describe("channel capability model", () => {
     assert.equal(telegram.reason, "not_implemented");
   });
 
+  it("documents the dead-letter path for both reliable queues", async () => {
+    const readiness = await getAdminReadiness(readyEnv({
+      egressFetch: async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }));
+    assert.equal(readiness.checks.dispatchQueue.status, "configured");
+    assert.equal(readiness.checks.dispatchQueue.detail, "retries → cf-notify-dispatch-dlq");
+    assert.equal(readiness.checks.deliveryQueue.status, "configured");
+    assert.equal(readiness.checks.deliveryQueue.detail, "retries → cf-notify-delivery-dlq");
+  });
+
   it("reports the actionable reason for degraded channels", () => {
     const missingCallback = getChannelCapability(
       readyEnv({ WECOM_CALLBACK_TOKEN: "" }),
