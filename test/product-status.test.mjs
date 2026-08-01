@@ -54,6 +54,44 @@ describe("channel capability model", () => {
     assert.equal(telegram.reason, "not_implemented");
   });
 
+  it("carries binding-flow copy and default provider accounts for the account center", () => {
+    const env = readyEnv({
+      WECHAT_PROVIDER_ACCOUNT_ID: "wechat-main",
+      WECOM_PROVIDER_ACCOUNT_ID: "wecom-main"
+    });
+    const channels = listChannelCapabilities(env, [
+      {
+        channel: "wechat_oa",
+        enabled: true,
+        accountName: "ehzyil的公众号",
+        description: "扫码关注后发送绑定码。",
+        imageUrl: "https://notify.example.com/wechat.png",
+        actionUrl: "https://mp.weixin.qq.com/x",
+        actionLabel: "打开公众号"
+      },
+      { channel: "wecom", enabled: true }
+    ]);
+
+    const wechat = channels.find((item) => item.channel === "wechat_oa");
+    assert.equal(wechat.providerAccountId, "wechat-main");
+    assert.equal(wechat.eyebrow, "WeChat Official Account");
+    assert.equal(wechat.accountLabel, "微信账号");
+    assert.equal(wechat.emptyTitle, "尚未绑定公众号");
+    assert.equal(wechat.openStep, "在微信中打开并关注通知公众号。");
+    assert.equal(wechat.sendStep, "将绑定码原样发送给公众号。");
+    assert.equal(wechat.accountName, "ehzyil的公众号");
+    assert.equal(wechat.description, "扫码关注后发送绑定码。");
+    assert.equal(wechat.imageUrl, "https://notify.example.com/wechat.png");
+    assert.equal(wechat.actionUrl, "https://mp.weixin.qq.com/x");
+    assert.equal(wechat.actionLabel, "打开公众号");
+
+    const wecom = channels.find((item) => item.channel === "wecom");
+    assert.equal(wecom.providerAccountId, "wecom-main");
+    assert.equal(wecom.eyebrow, "WeCom");
+    assert.equal(wecom.readyTitle, "企业微信通知已就绪");
+    assert.equal(wecom.sendStep, "将绑定码原样发送给应用。");
+  });
+
   it("documents the dead-letter path for both reliable queues", async () => {
     const readiness = await getAdminReadiness(readyEnv({
       egressFetch: async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
