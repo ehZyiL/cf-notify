@@ -1,11 +1,9 @@
 import { sha1Hex, sha256Hex, timingSafeEqual } from "../crypto.mjs";
-import { consumeBindCode } from "../bindings.mjs";
 import { assertOpenidCodeAttemptAllowed } from "../rate-limit.mjs";
 import { wechatDecrypt, wechatEncrypt } from "./wechat-crypto.mjs";
 import {
   consumeNotificationBindingChallenge,
-  updateNotificationBindingStatus,
-  usesNotificationDirectoryRpc
+  updateNotificationBindingStatus
 } from "../notification-directory.mjs";
 
 /**
@@ -75,17 +73,6 @@ function safeCdata(value) {
   return String(value == null ? "" : value).replaceAll("]]>", "]]]]><![CDATA[>");
 }
 
-async function revokeByOpenid(db, openid, channel = "wechat_oa") {
-  if (!db || !openid) return;
-  await db
-    .prepare(
-      `UPDATE channel_bindings SET status = 'revoked', updated_at = ?
-       WHERE channel = ? AND external_id = ? AND status = 'verified'`
-    )
-    .bind(new Date().toISOString(), channel, openid)
-    .run();
-}
-
 /**
  * Handle inbound WeChat message: bind code flow.
  * Supports plaintext XML; if Encrypt node present and AES key set, decrypt first.
@@ -134,17 +121,13 @@ export async function handleWechatMessage(env, xmlBody) {
       return reply("感谢关注。请在业务系统中生成绑定码，并发送给本公众号完成通知绑定。");
     }
     if (msg.Event === "unsubscribe") {
-      if (usesNotificationDirectoryRpc(env)) {
-        await updateNotificationBindingStatus(env, {
-          channel: "wechat_oa",
-          providerAccountId: env.WECHAT_PROVIDER_ACCOUNT_ID || env.WECHAT_APP_ID || "default",
-          externalIdentifier: openid,
-          status: "unsubscribed",
-          reason: "provider_unsubscribe"
-        });
-      } else {
-        await revokeByOpenid(env.db, openid, "wechat_oa");
-      }
+      await updateNotificationBindingStatus(env, {
+        channel: "wechat_oa",
+        providerAccountId: env.WECHAT_PROVIDER_ACCOUNT_ID || env.WECHAT_APP_ID || "default",
+        externalIdentifier: openid,
+        status: "unsubscribed",
+        reason: "provider_unsubscribe"
+      });
       return new Response("success", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
     return new Response("success", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -164,19 +147,13 @@ export async function handleWechatMessage(env, xmlBody) {
     return reply("尝试次数过多，请稍后再试。");
   }
 
-  const result = usesNotificationDirectoryRpc(env)
-    ? await consumeNotificationBindingChallenge(env, {
-        token: content,
-        channel: "wechat_oa",
-        providerAccountId: env.WECHAT_PROVIDER_ACCOUNT_ID || env.WECHAT_APP_ID || "default",
-        externalIdentifier: openid,
-        metadata: {}
-      })
-    : await consumeBindCode(env.db, env.db, {
-        code: content,
-        openid,
-        channel: "wechat_oa"
-      });
+  const result = await consumeNotificationBindingChallenge(env, {
+    token: content,
+    channel: "wechat_oa",
+    providerAccountId: env.WECHAT_PROVIDER_ACCOUNT_ID || env.WECHAT_APP_ID || "default",
+    externalIdentifier: openid,
+    metadata: {}
+  });
 
   if (!result?.ok) {
     return reply(

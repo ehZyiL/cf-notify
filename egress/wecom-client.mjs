@@ -3,6 +3,8 @@ const TOKEN_ERROR_CODES = new Set([40001, 40014, 42001]);
 const PERMANENT_ERROR_CODES = new Set([40013, 40056, 40058, 60111, 81013, 301002]);
 const textEncoder = new TextEncoder();
 
+import { sliceByBytes, byteLength } from "./text-bytes.mjs";
+
 function isSingleWecomUserId(value) {
   return Boolean(value)
     && textEncoder.encode(value).byteLength <= 64
@@ -110,10 +112,16 @@ export function createWecomClient({
     let content;
     if (msgType === "text") {
       const text = String(input.content || "").trim();
-      if (!text || text.length > 2000) {
+      if (!text || byteLength(text) > 2048) {
         throw Object.assign(new Error("invalid text content"), { statusCode: 400 });
       }
-      content = { text: { content: text } };
+      content = { text: { content: sliceByBytes(text, 2048) } };
+    } else if (msgType === "markdown") {
+      const text = String(input.content || "").trim();
+      if (!text || byteLength(text) > 2048) {
+        throw Object.assign(new Error("invalid markdown content"), { statusCode: 400 });
+      }
+      content = { markdown: { content: sliceByBytes(text, 2048) } };
     } else if (msgType === "textcard") {
       const title = String(input.title || "").trim();
       const description = String(input.description || "").trim();

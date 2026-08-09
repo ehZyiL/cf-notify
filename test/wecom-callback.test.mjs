@@ -166,12 +166,6 @@ describe("WeCom encrypted callback", () => {
     assert.equal(rateLimitKeys.length, 1);
     assert.match(rateLimitKeys[0], /^rl:bind-openid-fail:wecom:[0-9a-f]{64}:/);
     assert.doesNotMatch(rateLimitKeys[0], /zhangsan/);
-
-    const persisted = await env.db
-      .prepare("SELECT * FROM channel_bindings WHERE external_id = ?")
-      .bind("zhangsan")
-      .first();
-    assert.equal(persisted, null);
   });
 
   it("rejects encrypted payloads for a different CorpID", async () => {

@@ -1,5 +1,6 @@
 const MAX_EGRESS_RESPONSE_BYTES = 64 * 1024;
 const textEncoder = new TextEncoder();
+import { sliceByBytes } from "./text-bytes.mjs";
 
 function isSingleWecomUserId(value) {
   return Boolean(value)
@@ -60,8 +61,11 @@ export async function sendWecomApplicationMessage(
       }
     : {
         userId: target,
-        msgType: "text",
-        content: [title, body].filter(Boolean).join("\n").slice(0, 2000)
+        msgType: "markdown",
+        content: sliceByBytes(
+          `**${String(title || "通知").trim()}**\n\n${String(body || "").trim()}`,
+          2048
+        )
       };
 
   let response;

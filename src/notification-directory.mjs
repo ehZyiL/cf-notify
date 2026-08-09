@@ -1,7 +1,4 @@
-import { requireServiceClient } from "./auth-service.mjs";
-import { getVerifiedBinding } from "./bindings.mjs";
 import { bearerToken, HttpError } from "./http.mjs";
-import { resolveSubscribedChannels } from "./subscriptions.mjs";
 
 const CHANNEL_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
 
@@ -43,10 +40,6 @@ async function callDirectory(env, name, input) {
 }
 
 export async function requireServiceIdentity(env, request, options = {}) {
-  if (!usesNotificationDirectoryRpc(env)) {
-    return requireServiceClient(env.db, request, options);
-  }
-
   const rawKey = bearerToken(request);
   if (!rawKey) throw new HttpError(401, "service authentication required");
   const result = await callDirectory(env, "verifyServiceApiKey", rawKey);
@@ -107,9 +100,6 @@ function publicSettings(result, input) {
 }
 
 export async function getEffectiveNotificationSettings(env, input) {
-  if (!usesNotificationDirectoryRpc(env)) {
-    throw new HttpError(503, "effective settings require cf-auth notification directory RPC");
-  }
   const normalized = {
     serviceId: String(input.serviceId || ""),
     userId: String(input.userId || ""),
@@ -120,7 +110,6 @@ export async function getEffectiveNotificationSettings(env, input) {
 }
 
 export async function authorizeNotificationEvent(env, input) {
-  if (!usesNotificationDirectoryRpc(env)) return null;
   const normalized = {
     serviceId: String(input.serviceId || ""),
     userId: String(input.userId || ""),
@@ -174,39 +163,12 @@ function normalizeRpcTargets(result) {
 }
 
 export async function resolveNotificationTargets(env, input) {
-  if (usesNotificationDirectoryRpc(env)) {
-    const result = await callDirectory(env, "resolveNotificationTargets", {
-      serviceId: String(input.serviceId || ""),
-      userId: String(input.userId || ""),
-      eventType: String(input.eventType || "")
-    });
-    return normalizeRpcTargets(result);
-  }
-
-  const channels = await resolveSubscribedChannels(env.db, {
-    userId: input.userId,
-    serviceId: input.serviceId,
-    eventType: input.eventType,
-    channels: input.channels || ["wechat_oa"],
-    defaultOpen: env.SUBSCRIPTIONS_DEFAULT_OPEN !== "false"
+  const result = await callDirectory(env, "resolveNotificationTargets", {
+    serviceId: String(input.serviceId || ""),
+    userId: String(input.userId || ""),
+    eventType: String(input.eventType || "")
   });
-  const targets = [];
-  for (const channel of channels) {
-    const binding = await getVerifiedBinding(env.db, input.userId, channel);
-    if (binding) {
-      targets.push({
-        channel,
-        bindingId: binding.id,
-        address: binding.externalId
-      });
-    }
-  }
-  return {
-    decisionVersion: null,
-    targets,
-    deferUntil: null,
-    skipReason: !channels.length ? "not_subscribed" : targets.length ? null : "not_bound"
-  };
+  return normalizeRpcTargets(result);
 }
 
 export async function consumeNotificationBindingChallenge(env, input) {

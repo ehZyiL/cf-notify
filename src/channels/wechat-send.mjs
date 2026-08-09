@@ -6,6 +6,8 @@
  *   EGRESS_SHARED_SECRET
  */
 
+import { sliceByBytes } from "./text-bytes.mjs";
+
 const MAX_EGRESS_RESPONSE_BYTES = 64 * 1024;
 
 async function readLimitedText(response) {
@@ -117,7 +119,7 @@ export async function sendWechatTemplate(env, { openid, templateId, data, url, d
 }
 
 export async function sendWechatCustomText(env, { openid, text, deliveryId }) {
-  const content = String(text || "").trim().slice(0, 2000);
+  const content = sliceByBytes(String(text || "").trim(), 2048);
   if (!content) {
     return {
       ok: false,

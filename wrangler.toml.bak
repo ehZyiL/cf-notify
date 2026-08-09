@@ -38,10 +38,6 @@ WECOM_PROVIDER_ACCOUNT_ID = "wecom-main"
 WECOM_CORP_ID = "ww37c322e2b04fab42"
 WECOM_ACCOUNT_NAME = "ehzyil的快乐星球"
 WECOM_QRCODE_URL = "https://cf-notify.ehzyil.cc.cd/channel-assets/wecom-join.jpg"
-WECOM_CALLBACK_TOKEN = "5MLYQmBmvofu2yDqGWTn"
-WECOM_ENCODING_AES_KEY = "1MiJizUGkfL9BSCKmmIFPbLqaDAnRXKBsGjqDSKdFa9"
-WECHAT_APP_ID = "wx2e21428fdfe29b97"
-EGRESS_BASE_URL = "https://egress.ehzyil.cc.cd"
 
 [[queues.producers]]
 binding = "NOTIFY_DISPATCH_QUEUE"
@@ -51,8 +47,6 @@ queue = "cf-notify-dispatch"
 binding = "NOTIFY_DELIVERY_QUEUE"
 queue = "cf-notify-delivery"
 
-# Main queues retry transient failures, then forward exhausted messages to dedicated
-# DLQs. The DLQ consumers below finalize durable failed/unknown state in D1.
 [[queues.consumers]]
 queue = "cf-notify-dispatch"
 max_batch_size = 10

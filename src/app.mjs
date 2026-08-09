@@ -20,7 +20,7 @@ import {
   verifyWecomSignature
 } from "./channels/wecom-callback.mjs";
 import { HttpError, json, readJson, readText, requireFields, routeParts } from "./http.mjs";
-import { listLogs, sendNotification } from "./send.mjs";
+import { listLogs } from "./send.mjs";
 import { upsertChannelApp } from "./templates.mjs";
 import {
   getDeliveryRetryCandidate,
@@ -454,8 +454,7 @@ async function handleApi(request, env, parts, url) {
       );
       return json(result, { status: 202 });
     }
-    const result = await sendNotification(env, input, client);
-    return json(result);
+    throw new HttpError(503, "synchronous send is unavailable; configure dispatch queue");
   }
 
   throw new HttpError(404, "not found");

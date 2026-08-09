@@ -57,6 +57,62 @@ describe("WeCom fixed-IP egress client", () => {
     });
   });
 
+  it("builds a markdown application message", async () => {
+    const requests = [];
+    const client = createWecomClient({
+      corpId: "ww-corp",
+      appSecret: "app-secret",
+      agentId: "1000002",
+      async fetchImpl(url, init = {}) {
+        requests.push({ url, init });
+        if (url.includes("/gettoken?")) {
+          return jsonResponse({ errcode: 0, access_token: "token-1", expires_in: 7200 });
+        }
+        return jsonResponse({ errcode: 0, errmsg: "ok", msgid: "msg-md" });
+      }
+    });
+
+    await client.sendApplicationMessage({
+      userId: "zhangsan",
+      msgType: "markdown",
+      content: "**任务完成**\n\n同步已完成"
+    });
+
+    const send = requests.find((r) => r.url.includes("/message/send?"));
+    assert.deepEqual(JSON.parse(send.init.body), {
+      touser: "zhangsan",
+      msgtype: "markdown",
+      agentid: 1000002,
+      markdown: { content: "**任务完成**\n\n同步已完成" },
+      safe: 0,
+      enable_id_trans: 0,
+      enable_duplicate_check: 1,
+      duplicate_check_interval: 1800
+    });
+  });
+
+  it("rejects text content exceeding the 2048 byte limit by byte length, not characters", async () => {
+    const client = createWecomClient({
+      corpId: "ww-corp",
+      appSecret: "app-secret",
+      agentId: "1000002",
+      async fetchImpl() {
+        throw new Error("provider must not be called");
+      }
+    });
+
+    // 700 CJK chars = 2100 bytes > 2048 byte budget.
+    // Old char-based check (text.length > 2000) would have let this through.
+    await assert.rejects(
+      () => client.sendApplicationMessage({
+        userId: "zhangsan",
+        msgType: "text",
+        content: "字".repeat(700)
+      }),
+      (error) => error.statusCode === 400
+    );
+  });
+
   it("refreshes an invalid token once and retries the same payload", async () => {
     let tokenCalls = 0;
     const sendBodies = [];

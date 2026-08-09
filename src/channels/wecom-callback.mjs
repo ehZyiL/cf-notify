@@ -1,6 +1,6 @@
 import { sha1Hex, sha256Hex, timingSafeEqual } from "../crypto.mjs";
 import { HttpError } from "../http.mjs";
-import { consumeNotificationBindingChallenge, usesNotificationDirectoryRpc } from "../notification-directory.mjs";
+import { consumeNotificationBindingChallenge } from "../notification-directory.mjs";
 import { assertOpenidCodeAttemptAllowed } from "../rate-limit.mjs";
 import { parseWechatXml, wechatTextReply } from "./wechat-callback.mjs";
 import { wechatDecrypt, wechatEncrypt } from "./wechat-crypto.mjs";
@@ -113,10 +113,6 @@ export async function handleWecomMessage(env, xmlBody) {
   if (!attempt.allowed) {
     return wecomTextReply(env, message, "尝试次数过多，请稍后重新生成绑定码。");
   }
-  if (!usesNotificationDirectoryRpc(env)) {
-    throw new HttpError(409, "WeCom binding requires cf-auth notification directory RPC");
-  }
-
   const result = await consumeNotificationBindingChallenge(env, {
     token: code,
     channel: "wecom",

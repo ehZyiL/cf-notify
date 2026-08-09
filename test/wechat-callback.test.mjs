@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createMemoryKv } from "../src/memory-kv.mjs";
 import { createMemoryDb } from "../src/sqlite-d1.mjs";
-import { createBindCode, listBindingsForUser } from "../src/bindings.mjs";
 import {
   claimWechatCallback,
   isFreshWechatTimestamp,
@@ -61,30 +60,7 @@ describe("S4 wechat callback", () => {
     assert.equal(msg.Content, "AB12CD");
   });
 
-  it("binds user when message content is a valid code", async () => {
-    const kv = createMemoryKv();
-    const db = createMemoryDb();
-    const { code } = await createBindCode(db, {
-      userId: "user-42",
-      channel: "wechat_oa"
-    });
-
-    const env = { kv, db, WECHAT_TOKEN: "t" };
-    const xml = `<xml>
-      <ToUserName><![CDATA[gh]]></ToUserName>
-      <FromUserName><![CDATA[oX-openid]]></FromUserName>
-      <MsgType><![CDATA[text]]></MsgType>
-      <Content><![CDATA[${code}]]></Content>
-    </xml>`;
-    const res = await handleWechatMessage(env, xml);
-    const text = await res.text();
-    assert.match(text, /绑定成功/);
-
-    const bindings = await listBindingsForUser(db, "user-42");
-    assert.equal(bindings[0].externalId, "oX-openid");
-  });
-
-  it("delegates binding and unsubscribe state to cf-auth in rpc mode", async () => {
+  it("delegates binding and unsubscribe state to cf-auth", async () => {
     const calls = [];
     const env = {
       kv: createMemoryKv(),

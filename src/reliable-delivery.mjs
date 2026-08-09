@@ -2,8 +2,7 @@ import { deliverToChannel } from "./channels/index.mjs";
 import { HttpError } from "./http.mjs";
 import {
   authorizeNotificationEvent,
-  resolveNotificationTargets,
-  usesNotificationDirectoryRpc
+  resolveNotificationTargets
 } from "./notification-directory.mjs";
 
 const EVENT_TERMINAL = new Set(["completed", "partially_failed", "skipped", "failed"]);
@@ -242,7 +241,7 @@ export async function ingestNotificationEvent(env, input, client, idempotencyKey
   if (!env.dispatchQueue) throw new HttpError(503, "notification queue is not configured");
 
   const normalized = normalizeInput(input, client, {
-    directoryRpc: usesNotificationDirectoryRpc(env)
+    directoryRpc: true
   });
   // An omitted occurredAt means "ingestion time" and must not make an otherwise
   // identical idempotent replay conflict with the first request.

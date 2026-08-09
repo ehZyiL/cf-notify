@@ -126,6 +126,12 @@ Content-Type: application/json
 
 当前 Cloudflare 账号的 5 个 Cron Trigger 配额已用满，因此生产配置不新增 Cron。若首次 Queue 入队失败，接口返回带 `eventId` 和 `Retry-After` 的 `503`；调用方使用相同 `Idempotency-Key` 重试会重新入队，不会重复创建事件。`scheduled()` 补偿逻辑仍保留，释放 Cron 配额后可重新启用。
 
+本轮投递链路优化（公众号 + 企业微信，放弃群机器人）：
+
+- 字节级截断：微信/企业微信的 `text.content` / `markdown.content` 是 **字节** 限制（2048 B），不是字符数。中文 UTF-8 每字 3 字节，旧的 `.slice(0, 2000)` 会产出最多 6000 字节被供应商截断或拒绝。新增 `src/channels/text-bytes.mjs` 的 `sliceByBytes`，统一在 Worker 端与 egress 出口按字节裁剪且不切断多字节字符。
+- 企业微信无链接消息升级为 **markdown**：有 `url` 仍走 textcard 卡片（带跳转按钮），无 `url` 从纯文本升级为 `markdown`（标题加粗、正文引用/颜色），体验显著优于纯文本；限制同为 2048 字节。
+- 公众号 access_token 失效自动重试：egress 原来对 40001/40014/42001 直接抛错，现对齐企业微信出口——清缓存、强制刷新 token、重发一次原 payload；这几码在 `wechatErrorStatus` 也改为 503 临时可重试语义。公众号客户端抽取为独立 `egress/wechat-client.mjs`，与企业微信客户端结构对齐。
+
 本地验证命令：
 
 ```bash

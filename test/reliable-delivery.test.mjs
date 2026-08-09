@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { upsertBinding, revokeBinding } from "../src/bindings.mjs";
 import {
   deliverNotification,
   dispatchEvent,
@@ -15,7 +14,6 @@ import {
 } from "../src/reliable-delivery.mjs";
 import { listLogs } from "../src/send.mjs";
 import { createMemoryDb } from "../src/sqlite-d1.mjs";
-import { upsertSubscription } from "../src/subscriptions.mjs";
 
 class MemoryQueue {
   constructor() {
@@ -35,7 +33,28 @@ function makeEnv() {
   return {
     db: createMemoryDb(),
     dispatchQueue: new MemoryQueue(),
-    deliveryQueue: new MemoryQueue()
+    deliveryQueue: new MemoryQueue(),
+    NOTIFICATION_DIRECTORY_MODE: "rpc",
+    authService: {
+      async authorizeNotificationEvent(input) {
+        return {
+          ...input,
+          enabled: true,
+          channels: [{ channel: "wechat_oa", available: true, enabled: true }]
+        };
+      },
+      async resolveNotificationTargets() {
+        return {
+          decisionVersion: "test-v1",
+          targets: [{
+            channel: "wechat_oa",
+            bindingId: "nb_test",
+            address: "openid-test",
+            maskedTarget: "wx***test"
+          }]
+        };
+      }
+    }
   };
 }
 
@@ -113,11 +132,6 @@ describe("reliable notification delivery", () => {
 
   it("creates one logical delivery for duplicate dispatch messages", async () => {
     const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const event = await createEvent(env);
 
     await dispatchEvent(env, event.eventId);
@@ -130,12 +144,21 @@ describe("reliable notification delivery", () => {
   });
 
   it("defaults production delivery to closed without a user subscription", async () => {
-    const env = { ...makeEnv(), SUBSCRIPTIONS_DEFAULT_OPEN: "false" };
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
+    const env = {
+      ...makeEnv(),
+      authService: {
+        async authorizeNotificationEvent(input) {
+          return {
+            ...input,
+            enabled: true,
+            channels: [] // no channels → not subscribed
+          };
+        },
+        async resolveNotificationTargets() {
+          return { targets: [], skipReason: "not_subscribed" };
+        }
+      }
+    };
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
 
@@ -145,16 +168,35 @@ describe("reliable notification delivery", () => {
   });
 
   it("re-resolves bindings immediately before sending", async () => {
-    const env = makeEnv();
-    const binding = await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
+    const env = {
+      ...makeEnv(),
+      authService: {
+        async authorizeNotificationEvent(input) {
+          return {
+            ...input,
+            enabled: true,
+            channels: [{ channel: "wechat_oa", available: true, enabled: true }]
+          };
+        },
+        resolveNotificationTargets: (() => {
+          let call = 0;
+          return async () => {
+            call++;
+            return call === 1
+              ? {
+                  decisionVersion: "v1",
+                  targets: [{
+                    channel: "wechat_oa", bindingId: "nb_1", address: "openid-1"
+                  }]
+                }
+              : { decisionVersion: "v2", targets: [], skipReason: "not_bound" };
+          };
+        })()
+      }
+    };
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
     const [delivery] = await listEventDeliveries(env.db, event.eventId);
-    await revokeBinding(env.db, binding.binding.id, "user-a");
 
     let called = false;
     await deliverNotification(env, delivery.id, {
@@ -170,45 +212,65 @@ describe("reliable notification delivery", () => {
   });
 
   it("re-resolves subscriptions immediately before sending", async () => {
-    const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
+    const env = {
+      ...makeEnv(),
+      authService: {
+        async authorizeNotificationEvent(input) {
+          return {
+            ...input,
+            enabled: true,
+            channels: [{ channel: "wechat_oa", available: true, enabled: true }]
+          };
+        },
+        resolveNotificationTargets: (() => {
+          let call = 0;
+          return async () => {
+            call++;
+            return call === 1
+              ? {
+                  decisionVersion: "v1",
+                  targets: [{
+                    channel: "wechat_oa", bindingId: "nb_1", address: "openid-1"
+                  }]
+                }
+              : { decisionVersion: "v2", targets: [], skipReason: "not_subscribed" };
+          };
+        })()
+      }
+    };
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
     const [delivery] = await listEventDeliveries(env.db, event.eventId);
-    await upsertSubscription(env.db, {
-      userId: "user-a",
-      serviceId: "service-a",
-      eventType: "another.event",
-      enabled: true
-    });
 
+    let adapterCalled = false;
     const result = await deliverNotification(env, delivery.id, {
-      sendWechat: async () => ({ ok: true })
+      sendWechat: async () => {
+        adapterCalled = true;
+        return { ok: true };
+      }
     });
     const [updated] = await listEventDeliveries(env.db, event.eventId);
-    assert.equal(result.terminal, true);
+    assert.equal(adapterCalled, false);
     assert.equal(updated.status, "skipped");
     assert.equal(updated.errorCode, "not_subscribed");
   });
 
   it("honors the current subscription channel list", async () => {
-    const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
-    await upsertSubscription(env.db, {
-      userId: "user-a",
-      serviceId: "service-a",
-      eventType: "order.approved",
-      channels: ["telegram"],
-      enabled: true
-    });
+    const env = {
+      ...makeEnv(),
+      authService: {
+        async authorizeNotificationEvent(input) {
+          return {
+            ...input,
+            enabled: true,
+            channels: [{ channel: "wechat_oa", available: false, enabled: false }]
+          };
+        },
+        async resolveNotificationTargets() {
+          return { targets: [], skipReason: "not_subscribed" };
+        }
+      }
+    };
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
 
@@ -219,11 +281,6 @@ describe("reliable notification delivery", () => {
 
   it("claims a duplicate delivery only once while an adapter call is in flight", async () => {
     const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
     const [delivery] = await listEventDeliveries(env.db, event.eventId);
@@ -250,11 +307,6 @@ describe("reliable notification delivery", () => {
 
   it("retries temporary adapter failures per queue message", async () => {
     const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
     const [delivery] = await listEventDeliveries(env.db, event.eventId);
@@ -282,11 +334,6 @@ describe("reliable notification delivery", () => {
 
   it("marks exhausted delivery messages from the DLQ", async () => {
     const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
     const [delivery] = await listEventDeliveries(env.db, event.eventId);
@@ -305,11 +352,6 @@ describe("reliable notification delivery", () => {
 
   it("restores a retryable delivery when manual re-enqueue fails", async () => {
     const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
     const [delivery] = await listEventDeliveries(env.db, event.eventId);
@@ -332,11 +374,6 @@ describe("reliable notification delivery", () => {
 
   it("enforces retry risk policy in the delivery core", async () => {
     const permanentEnv = makeEnv();
-    await upsertBinding(permanentEnv.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const permanentEvent = await createEvent(permanentEnv);
     await dispatchEvent(permanentEnv, permanentEvent.eventId);
     const [permanentDelivery] = await listEventDeliveries(permanentEnv.db, permanentEvent.eventId);
@@ -353,11 +390,6 @@ describe("reliable notification delivery", () => {
     assert.deepEqual(permanentEnv.deliveryQueue.messages, []);
 
     const unknownEnv = makeEnv();
-    await upsertBinding(unknownEnv.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const unknownEvent = await createEvent(unknownEnv, {}, "order:unknown");
     await dispatchEvent(unknownEnv, unknownEvent.eventId);
     const [unknownDelivery] = await listEventDeliveries(unknownEnv.db, unknownEvent.eventId);
@@ -379,11 +411,6 @@ describe("reliable notification delivery", () => {
 
   it("does not manually retry a successfully sent delivery", async () => {
     const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
     const [delivery] = await listEventDeliveries(env.db, event.eventId);
@@ -400,11 +427,6 @@ describe("reliable notification delivery", () => {
 
   it("shows reliable deliveries in the existing user activity API", async () => {
     const env = makeEnv();
-    await upsertBinding(env.db, {
-      userId: "user-a",
-      channel: "wechat_oa",
-      externalId: "openid-a"
-    });
     const event = await createEvent(env);
     await dispatchEvent(env, event.eventId);
     const [delivery] = await listEventDeliveries(env.db, event.eventId);

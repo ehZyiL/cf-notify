@@ -21,7 +21,7 @@ async function withFetch(mock, callback) {
 }
 
 describe("WeCom application message delivery", () => {
-  it("sends text through the fixed-IP egress endpoint", async () => {
+  it("sends markdown through the fixed-IP egress endpoint when no url", async () => {
     let request;
     await withFetch(async (url, init) => {
       request = { url, init, body: JSON.parse(init.body) };
@@ -41,9 +41,24 @@ describe("WeCom application message delivery", () => {
     assert.equal(request.init.headers["X-Delivery-Id"], "delivery-1");
     assert.deepEqual(request.body, {
       userId: "zhangsan",
-      msgType: "text",
-      content: "任务完成\n同步已完成"
+      msgType: "markdown",
+      content: "**任务完成**\n\n同步已完成"
     });
+  });
+
+  it("truncates markdown content to 2048 bytes without splitting multibyte chars", async () => {
+    let body;
+    await withFetch(async (_url, init) => {
+      body = JSON.parse(init.body);
+      return Response.json({ ok: true });
+    }, () => sendWecomApplicationMessage(ENV, {
+      userId: "zhangsan",
+      title: "标题",
+      body: "字".repeat(700) // 2100 bytes body alone, plus title markdown
+    }));
+    // 2048 byte budget; content must not exceed it and must end on a clean char
+    assert.equal(Buffer.byteLength(body.content, "utf8") <= 2048, true);
+    assert.equal(body.content.endsWith("字") || body.content.endsWith("*"), true);
   });
 
   it("uses textcard for an HTTPS detail URL", async () => {

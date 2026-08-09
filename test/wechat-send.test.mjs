@@ -112,4 +112,28 @@ describe("WeChat customer-service text delivery", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("truncates customer-service text to 2048 UTF-8 bytes", async () => {
+    const originalFetch = globalThis.fetch;
+    let captured;
+    globalThis.fetch = async (_url, init) => {
+      captured = JSON.parse(init.body);
+      return Response.json({ ok: true, msgid: "wx-trunc" });
+    };
+    try {
+      // 700 CJK chars = 2100 bytes > 2048 byte budget
+      await sendWechatCustomText(
+        {
+          EGRESS_BASE_URL: "https://egress.example",
+          EGRESS_SHARED_SECRET: "shared-secret"
+        },
+        { openid: "openid-trunc", text: "字".repeat(700) }
+      );
+      assert.equal(Buffer.byteLength(captured.text, "utf8") <= 2048, true);
+      // Never split a multibyte char: trailing byte is a full char boundary
+      assert.equal(captured.text.endsWith("字"), true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

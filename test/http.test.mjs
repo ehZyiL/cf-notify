@@ -3,14 +3,16 @@ import { describe, it } from "node:test";
 import { createMemoryDb } from "../src/sqlite-d1.mjs";
 import { createMemoryKv } from "../src/memory-kv.mjs";
 import { createAppHandler } from "../src/app.mjs";
-import { createNotifyClient } from "../src/auth-service.mjs";
+import { createNotifyClient, getNotifyClient } from "../src/auth-service.mjs";
+import { verifyServiceSecret } from "../src/crypto.mjs";
 import { sha1Hex } from "../src/crypto.mjs";
 
 const ADMIN_SESSION_ID = "http-test-admin-session";
 
 function makeEnv(overrides = {}) {
+  const db = createMemoryDb();
   return {
-    db: createMemoryDb(),
+    db,
     kv: createMemoryKv(),
     WECHAT_TOKEN: "wx-token",
     WECOM_CALLBACK_TOKEN: "wecom-token",
@@ -34,6 +36,26 @@ function makeEnv(overrides = {}) {
           serviceId: "cf-notify",
           serviceRole: "admin"
         };
+      },
+      async verifyServiceApiKey(rawKey) {
+        const [clientId, secret] = rawKey.includes(":") ? rawKey.split(":") : [rawKey, ""];
+        const client = await getNotifyClient(db, clientId);
+        if (!client || Number(client.enabled) !== 1) {
+          return { valid: false, active: false };
+        }
+        const ok = await verifyServiceSecret(secret, client.secretHash);
+        if (!ok) return { valid: false, active: false };
+        return {
+          valid: true,
+          keyId: client.clientId,
+          serviceId: client.serviceId,
+          name: client.name,
+          scopes: client.scopes,
+          active: true
+        };
+      },
+      async authorizeNotificationEvent(input) {
+        return { ...input, enabled: true, channels: [] };
       }
     },
     ...overrides
